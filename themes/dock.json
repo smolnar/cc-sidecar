@@ -1,0 +1,7 @@
+{
+  "name": "Light ANSI, dark sidebar",
+  "base": "light-ansi",
+  "overrides": {
+    "composerSidebarBackground": "#22272e"
+  }
+}

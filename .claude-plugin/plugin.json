@@ -1,0 +1,17 @@
+{
+  "name": "sidecar",
+  "version": "0.5.0",
+  "description": "A sidecar for Claude Code: an OpenCode-style panel on the right with the title, recap, plan, now and subagents on top; changed files, context and cache, speed, limits and every session that needs you pinned to the bottom",
+  "author": {
+    "name": "Samuel Molnar"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "panelBackground": {
+      "type": "string",
+      "title": "Panel background",
+      "description": "A #rrggbb colour to paint the panel, such as #22272e on a dark terminal; empty leaves the terminal's own background.",
+      "default": ""
+    }
+  }
+}

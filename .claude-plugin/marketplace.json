@@ -1,0 +1,6 @@
+{
+  "name": "sidecar",
+  "description": "A sidebar for Claude Code that shows what the session is doing: plan, changed files, context, limits and the sessions that need you",
+  "owner": { "name": "Samuel Molnar" },
+  "plugins": [{ "name": "sidecar", "source": "./" }]
+}

@@ -1,0 +1,10 @@
+# Claude Code's local state for a session run in this folder.
+.claude/
+
+# Written by Claude Code when it loads the mod (it holds its own .gitignore too).
+.claude-plugin/types/
+
+# OS and editor noise
+.DS_Store
+*~
+*.log
