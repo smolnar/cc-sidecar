@@ -296,6 +296,39 @@ export function fitBlocks(
   return { form, listed, hasGaps, hidden };
 }
 
+/** The items a list shows: the first, how many, and the furthest it scrolls, 0 for a list shown whole. */
+export type ListWindow = { first: number; count: number; end: number };
+
+/**
+ * Which items a list scrolled `offset` items down shows, in the rows the fit gave it: room for its
+ * first `listed` items and a row counting the rest. Scrolled, a row counting the items above takes
+ * one of those rows, and the row counting the items below goes once none is left. `items` holds
+ * each item's rows. The offset is held between the top and `end`, the first that shows the last item.
+ */
+export function scrollWindow(
+  items: readonly number[],
+  listed: number,
+  offset: number
+): ListWindow {
+  if (listed >= items.length) return { first: 0, count: items.length, end: 0 };
+  const room = items.slice(0, listed).reduce((sum, rows) => sum + rows, 0) + 1;
+  const countFrom = (first: number): number => {
+    let left = room - 1;
+    let count = 0;
+    for (let i = first; i < items.length; i++) {
+      const rows = items[i] ?? 0;
+      if (rows + (i + 1 < items.length ? 1 : 0) > left) break;
+      left -= rows;
+      count++;
+    }
+    return count;
+  };
+  let end = 1;
+  while (end < items.length - 1 && end + countFrom(end) < items.length) end++;
+  const first = Math.min(Math.max(offset, 0), end);
+  return { first, count: first === 0 ? listed : countFrom(first), end };
+}
+
 // ---------- changed files ----------
 
 const DIFF_CELLS = 10;

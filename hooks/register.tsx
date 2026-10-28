@@ -96,13 +96,14 @@ import {
   planCount,
   recentSteps,
   resetLabel,
+  scrollWindow,
   short,
   sparkline,
   speedSummary,
   whereLine,
   wrapText,
 } from "./sidebar";
-import type { Note, Tone } from "./sidebar";
+import type { ListWindow, Note, Tone } from "./sidebar";
 import {
   activeTabId,
   renamePane,
@@ -170,6 +171,10 @@ const cacheTtl = atom({ plugin: "sidecar", key: "cacheTtl" } as const, null);
 const prompts = atom(
   { plugin: "sidecar", key: "prompts" } as const,
   [] as string[]
+);
+const scrolled = atom(
+  { plugin: "sidecar", key: "scrolled" } as const,
+  {} as Record<string, number>
 );
 /**
  * The prompt cache's two lifetimes. A subscription's main session caches for an hour (Claude
@@ -502,6 +507,7 @@ async function forgetConversation($: EngineInterface): Promise<void> {
   await update($, agents, () => []);
   await update($, cache, () => null);
   await update($, prompts, () => []);
+  await update($, scrolled, () => ({}));
   storedWork = JSON.stringify(EMPTY_WORK);
 }
 
@@ -1133,6 +1139,9 @@ export const register: Register = (on, options) => {
   let queue: Promise<void> = Promise.resolve();
   // While a turn runs, the state line counts its time to the second.
   let secondTimer: { cancel: () => void } | null = null;
+  // The lists the panel last drew cut short: the dock rows each spans, for the wheel to find, and how far it scrolls.
+  let scrollable: { key: string; first: number; last: number; end: number }[] =
+    [];
 
   const enqueue = (job: () => Promise<void>): void => {
     queue = queue.then(job).catch(() => undefined);
@@ -1428,6 +1437,29 @@ export const register: Register = (on, options) => {
     return next(e);
   }).catch(($, e, next) => next(e));
 
+  // The panel is exactly the dock's height, so the wheel never moves it: over a list cut short it
+  // moves that list alone, an item a row. Elsewhere, and for the scroll keys, Claude Code's own.
+  on(
+    "ui.scroll",
+    { component: "Pane", requestId: PANEL },
+    async ($, e, next) => {
+      const row = e.pointer?.row;
+      const list = scrollable.find(
+        (view) => row !== undefined && row >= view.first && row <= view.last
+      );
+      if (list === undefined) return next(e);
+      // Ticks come faster than the panel draws: each moves the list from where the last left it.
+      const within = (offset: number) =>
+        Math.min(Math.max(offset, 0), list.end);
+      await update($, scrolled, (was) => {
+        const from = within(was[list.key] ?? 0);
+        const to = within(from + e.by);
+        return to === was[list.key] ? was : { ...was, [list.key]: to };
+      });
+      return {};
+    }
+  ).catch(($, e, next) => next(e));
+
   // In the fullscreen layout a pane docks beside the transcript, so the panel opens by itself. The
   // terminal raises no session.attach: the band's drawing is the first place that says it is fullscreen.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
@@ -1548,6 +1580,7 @@ export const register: Register = (on, options) => {
     const engine = await read($, about);
     if (engine === null || !(await isSetUp($))) askForSetUp($);
     const runningAgents = await read($, agents);
+    const offsets = await read($, scrolled);
     const plan = planView(recorded, current);
     const title = titleOf(current, running?.prompt ?? "");
 
@@ -2107,24 +2140,51 @@ export const register: Register = (on, options) => {
       e.props.scroll.bodyRows - 2 * PANEL_PADDING_Y,
       titleRows.length + stateRows.length + footerRows.length
     );
-    /** A listing's rows: its first `listed` items, then a row counting the rest. */
-    const listingRows = (form: Listing, listed: number): Row[] => [
-      ...form.head,
-      ...form.items.slice(0, listed).flat(),
-      ...(listed < form.items.length
-        ? [form.more(form.items.length - listed)]
-        : []),
-    ];
-    const group = (keys: readonly string[]) =>
-      keys.flatMap((key) => {
+    /** A listing's rows: the items its window shows, with a row counting those above and one those below. */
+    const listingRows = (
+      key: string,
+      form: Listing,
+      view: ListWindow
+    ): Row[] => {
+      const below = form.items.length - view.first - view.count;
+      return [
+        ...form.head,
+        ...(view.first > 0
+          ? [text(`${key}-above`, `↑ ${view.first} above`, { dim: true })]
+          : []),
+        ...form.items.slice(view.first, view.first + view.count).flat(),
+        ...(below > 0 ? [form.more(below)] : []),
+      ];
+    };
+    /** A group's rows, and the rows of it each list the dock cuts short spans, from the group's top. */
+    const group = (keys: readonly string[]) => {
+      const rows: Row[] = [];
+      const lists: typeof scrollable = [];
+      for (const key of keys) {
         const form = blocks[key]?.[fit.form[key] ?? 0] ?? [];
-        const rows = isListing(form)
-          ? listingRows(form, fit.listed[key] ?? 0)
-          : form;
-        return rows.length === 0
-          ? []
-          : [...(fit.hasGaps ? [blank(`${key}-gap`)] : []), ...rows];
-      });
+        let view: ListWindow | null = null;
+        let drawn: Row[] = [];
+        if (isListing(form)) {
+          view = scrollWindow(
+            form.items.map((item) => item.length),
+            fit.listed[key] ?? 0,
+            offsets[key] ?? 0
+          );
+          drawn = listingRows(key, form, view);
+        } else drawn = form;
+        if (drawn.length === 0) continue;
+        if (fit.hasGaps) rows.push(blank(`${key}-gap`));
+        if (view !== null && view.end > 0)
+          lists.push({
+            key,
+            first: rows.length,
+            last: rows.length + drawn.length - 1,
+            end: view.end,
+          });
+        rows.push(...drawn);
+      }
+      return { rows, lists };
+    };
     const hiddenRows =
       fit.hidden.length === 0
         ? []
@@ -2137,6 +2197,35 @@ export const register: Register = (on, options) => {
               { dim: true }
             ),
           ];
+    const footerBlock = [
+      ...(fit.hasGaps && footerRows.length + hiddenRows.length > 0
+        ? [blank("footer-gap")]
+        : []),
+      ...hiddenRows,
+      ...footerRows,
+    ];
+    const top = group(TOP_SECTIONS);
+    const bottom = group(BOTTOM_SECTIONS);
+    // The top group starts under the title and the state line; the bottom group ends on the footer.
+    const shift = (lists: typeof scrollable, by: number) =>
+      lists.map((list) => ({
+        ...list,
+        first: list.first + by,
+        last: list.last + by,
+      }));
+    scrollable = [
+      ...shift(
+        top.lists,
+        PANEL_PADDING_Y + titleRows.length + stateRows.length
+      ),
+      ...shift(
+        bottom.lists,
+        e.props.scroll.bodyRows -
+          PANEL_PADDING_Y -
+          footerBlock.length -
+          bottom.rows.length
+      ),
+    ];
 
     // Exactly the dock's height; the spare rows fall between CHANGED and CONTEXT. Should even the
     // smallest forms not fit, the top gives way from its end and the bottom from its start, never the footer.
@@ -2157,7 +2246,7 @@ export const register: Register = (on, options) => {
           overflow="hidden"
         >
           <Box flexDirection="column" flexShrink={0}>
-            {[...titleRows, ...stateRows, ...group(TOP_SECTIONS)]}
+            {[...titleRows, ...stateRows, ...top.rows]}
           </Box>
         </Box>
         <Box key="spacer" flexGrow={1} />
@@ -2170,17 +2259,11 @@ export const register: Register = (on, options) => {
           overflow="hidden"
         >
           <Box flexDirection="column" flexShrink={0}>
-            {group(BOTTOM_SECTIONS)}
+            {bottom.rows}
           </Box>
         </Box>
         <Box key="footer" flexDirection="column" flexShrink={0}>
-          {[
-            ...(fit.hasGaps && footerRows.length + hiddenRows.length > 0
-              ? [blank("footer-gap")]
-              : []),
-            ...hiddenRows,
-            ...footerRows,
-          ]}
+          {footerBlock}
         </Box>
       </Box>
     );

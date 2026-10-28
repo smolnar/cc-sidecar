@@ -210,6 +210,8 @@ declare module "claude-code" {
       cacheTtl: "5m" | "1h" | null;
       /** The person's prompts as Haiku hears them when it names the session: the first, then the newest. */
       prompts: string[];
+      /** How many items the person scrolled each of the panel's lists down with the wheel, by section. */
+      scrolled: Record<string, number>;
     };
   }
 }

@@ -136,6 +136,56 @@ async function dock($: Engine, bodyRows: number) {
   });
   const root = await panel.drawn();
   await panel.unmount();
+  return groups(root);
+}
+
+/**
+ * A dock `bodyRows` tall that stays on screen, and the wheel turned over it as Claude Code
+ * reports a turn: `by` rows, over the dock's row counted from its top, the top group from the
+ * first row and the bottom group and the footer against the last.
+ */
+async function heldDock($: Engine, bodyRows: number) {
+  const panel = await mountPanel($, {
+    bodyColumns: DOCK,
+    scroll: { offset: 0, bodyRows },
+  });
+  const rows = async () => groups(await panel.drawn());
+  const scroll = (by: number, row?: number) =>
+    $.ui.scroll({
+      component: "Pane",
+      requestId: "brief",
+      offset: 0,
+      by,
+      bodyRows,
+      contentRows: bodyRows,
+      origin: { kind: "person" },
+      ...(row === undefined ? {} : { pointer: { column: 4, row } }),
+    });
+  /** The dock row of the first row that starts with `over`. */
+  const rowOf = async (over: string) => {
+    const shown = await rows();
+    const top = shown.top.findIndex((row) => row.startsWith(over));
+    const bottom = shown.bottom.findIndex((row) => row.startsWith(over));
+    if (top < 0 && bottom < 0) throw new Error(`no row starts with ${over}`);
+    return top >= 0
+      ? top
+      : bodyRows - shown.footer.length - shown.bottom.length + bottom;
+  };
+  return {
+    rows,
+    rowOf,
+    /** The wheel over the first row that starts with `over`. */
+    wheel: async (over: string, by: number) => scroll(by, await rowOf(over)),
+    /** The wheel over the dock's row `row`. */
+    wheelAt: (row: number, by: number) => scroll(by, row),
+    /** The scroll keys while the panel has the focus: no pointer. */
+    keys: (by: number) => scroll(by),
+    unmount: () => panel.unmount(),
+  };
+}
+
+/** A drawn panel's rows by group; every Text is one row, the spacer none. */
+function groups(root: RenderNode) {
   const [top, , bottom, footer] = childrenOf(root);
   const rows = (node: RenderNode | undefined) => {
     const text = textOf(node);
@@ -1745,6 +1795,265 @@ describe("lists that fill the dock", () => {
     expect(items).toBeGreaterThan(3);
     expect(files).toBeGreaterThan(3);
     expect(Math.abs(items - files)).toBeLessThanOrEqual(1);
+  });
+
+  describe("scrolled with the wheel", () => {
+    const filesIn = (rows: string[]) =>
+      rows.filter(isFile).map((row) => row.split(" ")[0]);
+
+    /** Twelve changed files in a dock that lists only some of them. */
+    async function manyFiles(h: Harness, $: Engine) {
+      await briefed(h, $);
+      await startTurn($, "go");
+      await editFiles(h, $, FILES);
+      return heldDock($, 24);
+    }
+
+    test("shows the next subagents when the wheel turns down over AGENTS, and how many are above", async ($, on) => {
+      const h = await boot($, on);
+      await briefed(h, $);
+      await startTurn($, "research it");
+      const names = [
+        "Terminal tools",
+        "GUI orchestrators",
+        "In-session HUDs",
+        "Social buzz",
+        "Release notes",
+        "Pricing pages",
+        "Issue trackers",
+        "Forum threads",
+      ];
+      for (const name of names) {
+        const id = await spawnAgent($, name);
+        await $.tool.call({
+          tool: "WebSearch",
+          query: name,
+          agentId: id,
+        } as never);
+      }
+      const listedIn = (rows: string[]) =>
+        rows
+          .filter((row) => row.startsWith("◐ "))
+          .map((row) => row.slice(2).split("  ")[0]);
+      const held = await heldDock($, 30);
+
+      await held.wheel("◐ Terminal tools", 1);
+      const agents = section((await held.rows()).all, "AGENTS");
+      const listed = listedIn(agents);
+
+      expect(agents[1]).toBe("↑ 1 above");
+      expect(listed.length).toBeGreaterThan(3);
+      expect(listed).toEqual(names.slice(1, 1 + listed.length));
+      expect(agents.at(-1)).toBe(`… ${names.length - 1 - listed.length} more`);
+    });
+
+    test("shows the next changed files when the wheel turns down over CHANGED, the dock as tall as before", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+
+      await held.wheel(NEWEST[0] ?? "", 1);
+      const shown = await held.rows();
+      const changed = section(shown.all, "CHANGED");
+      const listed = filesIn(changed);
+
+      expect(changed[1]).toBe("↑ 1 above");
+      expect(listed.length).toBeGreaterThan(2);
+      expect(listed).toEqual(NEWEST.slice(1, 1 + listed.length));
+      expect(changed.at(-1)).toBe(
+        `… ${FILES.length - 1 - listed.length} more files`
+      );
+      expect(shown.all).toHaveLength(24);
+    });
+
+    test("moves a list as many items as the wheel turns at once", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+
+      await held.wheel(NEWEST[0] ?? "", 3);
+      const changed = section((await held.rows()).all, "CHANGED");
+
+      expect(changed[1]).toBe("↑ 3 above");
+      expect(filesIn(changed)[0]).toBe(NEWEST[3]);
+    });
+
+    test("counts every tick of a quick turn, those that come before the panel draws again too", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+
+      const row = await held.rowOf(NEWEST[0] ?? "");
+      await Promise.all([held.wheelAt(row, 1), held.wheelAt(row, 1)]);
+      const changed = section((await held.rows()).all, "CHANGED");
+
+      expect(changed[1]).toBe("↑ 2 above");
+      expect(filesIn(changed)[0]).toBe(NEWEST[2]);
+    });
+
+    test("goes back to the top of a list as the wheel turns up", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+      const before = (await held.rows()).all;
+
+      await held.wheel(NEWEST[0] ?? "", 2);
+      await held.wheel(NEWEST[2] ?? "", -2);
+
+      expect((await held.rows()).all).toEqual(before);
+    });
+
+    test("stops where a list's last item shows, with no row counting more", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+
+      await held.wheel(NEWEST[0] ?? "", 50);
+      const shown = await held.rows();
+      const changed = section(shown.all, "CHANGED");
+      const listed = filesIn(changed);
+      await held.wheel(listed[0] ?? "", 1);
+
+      expect(listed.at(-1)).toBe(NEWEST.at(-1));
+      expect(changed[1]).toBe(`↑ ${FILES.length - listed.length} above`);
+      expect(changed.some((row) => row.includes("more"))).toBe(false);
+      expect(shown.all).toHaveLength(24);
+      expect((await held.rows()).all).toEqual(shown.all);
+    });
+
+    test("leaves a list at its top when the wheel turns up there", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+      const before = (await held.rows()).all;
+
+      await held.wheel(NEWEST[0] ?? "", -1);
+
+      expect((await held.rows()).all).toEqual(before);
+    });
+
+    test("leaves a list the dock shows whole as it is", async ($, on) => {
+      const h = await boot($, on);
+      await briefed(h, $);
+      await startTurn($, "go");
+      await editFiles(h, $, FILES);
+      const held = await heldDock($, 50);
+      const before = (await held.rows()).all;
+
+      await held.wheel(NEWEST[0] ?? "", 1);
+
+      expect((await held.rows()).all).toEqual(before);
+    });
+
+    test("moves only the list under the pointer", async ($, on) => {
+      const h = await boot($, on);
+      await briefed(h, $);
+      await startTurn($, "go");
+      await $.tool.call({ tool: "TodoWrite", todos: todos(10) } as never);
+      await editFiles(h, $, FILES);
+      const held = await heldDock($, 36);
+      const plan = section((await held.rows()).all, "PLAN");
+
+      await held.wheel(NEWEST[0] ?? "", 2);
+      const shown = await held.rows();
+
+      expect(section(shown.all, "CHANGED")[1]).toBe("↑ 2 above");
+      expect(section(shown.all, "PLAN")).toEqual(plan);
+    });
+
+    test("moves no list when the wheel turns over a row outside them", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+      const before = (await held.rows()).all;
+
+      await held.wheel(BRIEF.title, 1);
+
+      expect((await held.rows()).all).toEqual(before);
+    });
+
+    test("moves no list when the scroll keys move the panel", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+      const before = (await held.rows()).all;
+
+      await held.keys(1);
+
+      expect((await held.rows()).all).toEqual(before);
+    });
+
+    test("shows a list from its top once it got short enough to show whole", async ($, on) => {
+      const h = await boot($, on);
+      await briefed(h, $);
+      await startTurn($, "go");
+      await $.tool.call({ tool: "TodoWrite", todos: todos(10) } as never);
+      const held = await heldDock($, 24);
+      await held.wheel("◐ Write the failing tests", 3);
+      expect(
+        section((await held.rows()).all, "PLAN").filter((row) =>
+          row.startsWith("↑")
+        )
+      ).toEqual(["↑ 3 above"]);
+
+      await $.tool.call({ tool: "TodoWrite", todos: todos(2) } as never);
+      const plan = section((await held.rows()).all, "PLAN");
+
+      expect(plan.filter(isOpenItem)).toEqual([
+        "◐ Write the failing tests",
+        "○ Step 01",
+        "○ Step 02",
+      ]);
+      expect(plan.some((row) => row.startsWith("↑"))).toBe(false);
+    });
+
+    test("scrolls the sessions that need you, at the foot of the dock", async ($, on) => {
+      const h = await boot($, on);
+      const names = [
+        "Bookshelf plans",
+        "Nightly backup gap",
+        "Newsletter sync",
+        "Invoice export",
+        "Garden notes",
+        "Photo archive",
+        "Recipe box",
+      ];
+      for (const [i, name] of names.entries())
+        otherSession(h, {
+          id: `other-${i}`,
+          name,
+          state: "waiting",
+          question: `${name}?`,
+          since: h.clock.now() - (names.length - i) * MINUTE,
+        });
+      await briefed(h, $);
+      await h.clock.advance(POLL);
+      const listedIn = (rows: string[]) =>
+        rows
+          .filter((row) => row.startsWith("◆ "))
+          .map((row) => row.slice(2).split("  ")[0]);
+      const held = await heldDock($, 26);
+
+      await held.wheel("◆ Bookshelf plans", 1);
+      const needs = section((await held.rows()).all, "NEEDS YOU");
+      const listed = listedIn(needs);
+
+      expect(needs[1]).toBe("↑ 1 above");
+      expect(listed.length).toBeGreaterThan(2);
+      expect(listed).toEqual(names.slice(1, 1 + listed.length));
+    });
+
+    test("starts the lists at their top in the conversation /clear opens", async ($, on) => {
+      const h = await boot($, on);
+      const held = await manyFiles(h, $);
+      await held.wheel(NEWEST[0] ?? "", 3);
+      expect(section((await held.rows()).all, "CHANGED")[1]).toBe("↑ 3 above");
+      await held.unmount();
+
+      await switchConversation(h, $, "clear", "sess-2");
+      // The first draw sets the next conversation up: Claude Code raises no session.start.
+      const next = await heldDock($, 24);
+      await next.rows();
+      await h.clock.advance(1);
+      await startTurn($, "again");
+      await editFiles(h, $, FILES);
+      const changed = section((await next.rows()).all, "CHANGED");
+
+      expect(changed.some((row) => row.startsWith("↑"))).toBe(false);
+      expect(filesIn(changed)[0]).toBe(NEWEST[0]);
+    });
   });
 });
 

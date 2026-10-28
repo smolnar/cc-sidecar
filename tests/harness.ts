@@ -767,6 +767,8 @@ export async function boot(
     harness.opened = harness.opened.filter((pane) => pane.id !== e.id);
     return { value: undefined };
   });
+  // Claude Code moves the pane's window to e.offset; the panel is as tall as the dock, so nothing moves.
+  on("ui.scroll", () => ({}));
   on("session.end", ($, e) => ({ sessionId: e.sessionId }));
   on("turn.step", async function* ($, e) {
     const plan = harness.stepPlans.shift() ?? { text: "" };
