@@ -3,8 +3,10 @@
 A sidebar for Claude Code. It docks a panel beside the transcript that shows what the session is doing and what it has done, so you can see where a long session stands without scrolling back.
 
 <p align="center">
-  <img src="docs/sidecar.png" alt="A Claude Code session adding gift cards to a small shop, with the transcript on the left and the panel on the right. The panel shows the title, Working for 2m 58s, a recap of the first turn, a plan with 7 of 8 tasks done, what Claude is doing now, two subagents running with what each is doing, six changed files with lines added and removed, the context window, output speed, the 5-hour and weekly limits, a docs session that needs you, and the footer with the folder, branch and Claude Code version." width="100%">
+  <img src="docs/sidecar.png" alt="A Claude Code session in a terminal window, adding gift cards to a small shop, with the transcript on the left and the panel on the right. The panel shows the title, Working for 2m 58s, a recap of the first turn, a plan with 7 of 8 tasks done, what Claude is doing now, two subagents running with what each is doing, six changed files with lines added and removed, the context window, output speed, the 5-hour and weekly limits, a docs session that needs you, and the footer with the folder, branch and Claude Code version." width="100%">
 </p>
+
+<p align="center"><sub>A 20-second tour: <a href="docs/cc-sidecar.mp4">video</a> · <a href="docs/cc-sidecar.gif">GIF</a></sub></p>
 
 ## What it shows
 
