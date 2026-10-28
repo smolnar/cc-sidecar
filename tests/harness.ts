@@ -1,6 +1,7 @@
 import { mock } from "claude-code/testing";
 import type { Engine, MockClock } from "claude-code/testing";
 import type {
+  AgentStatus,
   ModelCompleteInput,
   ModelCompleteResult,
   ModelForkRequest,
@@ -84,6 +85,18 @@ export type FakeGit = {
   fsmonitorRuns: string[];
   /** The folder of every git command the mod ran (`-C <dir>`), oldest first. */
   dirs: string[];
+  /** Files added to the index of a repository with no commit yet, with their line counts. */
+  staged: Record<string, number>;
+  /** True in a repository with no commit yet: `HEAD` names nothing, so every file is new. */
+  isUnborn: boolean;
+  /** While true, every command outlasts its timeout, as git does in a huge repository: the call rejects. */
+  isTimingOut: boolean;
+  /**
+   * The folders where git wrote `.git/index` back, oldest first: `status` and `diff HEAD` refresh
+   * it whenever they can take its lock, unless `--no-optional-locks` says not to, and a commit the
+   * person runs meanwhile fails on the lock.
+   */
+  indexWrites: string[];
 };
 
 /** The person's home, and the repository the session runs in, under it. */
@@ -206,6 +219,15 @@ export type Harness = {
   gone: Set<string>;
   /** While true, `claude agents` fails, as one too old to know `--json` does. */
   isAgentsDown: boolean;
+  /**
+   * The subagents Claude Code runs, by id, as `$.agent.list()` reports them, how long that call
+   * takes on the mocked clock (0 answers at once), and how many times the mod made it.
+   */
+  agents: {
+    statuses: Map<string, AgentStatus>;
+    listDelayMs: number;
+    lists: number;
+  };
 };
 
 /** A session `claude agents --json` lists as running on its own. */
@@ -240,6 +262,27 @@ const RAN = {
   isStderrTruncated: false,
 };
 
+/** The global options git takes as bare flags before `-C`. */
+const GIT_FLAGS = new Set(["--no-optional-locks", "--literal-pathspecs"]);
+
+/**
+ * Whether a pathspec names `path` as git matches one without `--literal-pathspecs`: the path
+ * itself, or a glob in which `*`, `?` and `[...]` match, so `v[12].md` names `v1.md` too.
+ */
+function isNamedBy(pathspec: string, path: string): boolean {
+  if (pathspec === path) return true;
+  const source = pathspec
+    .replace(/[.+^${}()|\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".")
+    .replace(/\[!/g, "[^");
+  try {
+    return new RegExp(`^${source}$`).test(path);
+  } catch {
+    return false;
+  }
+}
+
 /** `git -C <dir> diff --numstat HEAD -- <path>`, `ls-files --others` and `diff --no-index`, as git answers them. */
 function runGit(git: FakeGit, argv: readonly string[]) {
   const ran = (exitCode: number, stdout = "", stderr = "") => ({
@@ -248,12 +291,19 @@ function runGit(git: FakeGit, argv: readonly string[]) {
     stdout,
     stderr,
   });
-  // `git -c <key>=<value> ... -C <dir> <command>`: settings on the command line beat the repository's.
+  // `git [-c <key>=<value>] [--<flag>] ... -C <dir> <command>`: settings on the command line beat the repository's.
   const settings: string[] = [];
+  const flags: string[] = [];
   let at = 1;
-  while (argv[at] === "-c") {
-    settings.push(argv[at + 1] ?? "");
-    at += 2;
+  for (;;) {
+    const arg = argv[at] ?? "";
+    if (arg === "-c") {
+      settings.push(argv[at + 1] ?? "");
+      at += 2;
+    } else if (GIT_FLAGS.has(arg)) {
+      flags.push(arg);
+      at += 1;
+    } else break;
   }
   if (git.isDown || argv[0] !== "git" || argv[at] !== "-C")
     return ran(128, "", "fatal: not a git repository");
@@ -276,7 +326,26 @@ function runGit(git: FakeGit, argv: readonly string[]) {
     .join(" ");
   const path = argv[argv.length - 1] ?? "";
   const name = path.split("/").pop() ?? path;
+  const isRefreshing =
+    command === "status" ||
+    (command === "diff" && args.includes(" HEAD ") && !git.isUnborn);
+  if (isRefreshing && !flags.includes("--no-optional-locks"))
+    git.indexWrites.push(dir);
+  // Every file git knows of that the pathspec names, in git's order.
+  const named = (known: readonly string[]): string[] =>
+    known
+      .filter((one) =>
+        flags.includes("--literal-pathspecs")
+          ? one === path
+          : isNamedBy(path, one)
+      )
+      .sort();
+  const lines = (paths: string[], line: (one: string) => string): string =>
+    paths.map((one) => `${line(one)}\n`).join("");
+  const nameOf = (one: string): string => one.split("/").pop() ?? one;
   if (args === "status --porcelain=v2 --branch") return ran(0, git.status);
+  if (args === "rev-parse --verify --quiet HEAD")
+    return git.isUnborn ? ran(1) : ran(0, "1a2b3c\n");
   if (
     args ===
     "rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir"
@@ -290,17 +359,23 @@ function runGit(git: FakeGit, argv: readonly string[]) {
           `${tree.root}\n${tree.commonDir}/worktrees/${name}\n${tree.commonDir}\n`
         );
   }
-  if (args.startsWith("diff --numstat HEAD -- ")) {
-    const counts = git.changed[path];
-    return ran(0, counts === undefined ? "" : `${counts}\t${name}\n`);
-  }
+  if (args.startsWith("diff --numstat HEAD -- "))
+    return git.isUnborn
+      ? ran(128, "", "fatal: bad revision 'HEAD'")
+      : ran(
+          0,
+          lines(
+            named(Object.keys(git.changed)),
+            (one) => `${git.changed[one]}\t${nameOf(one)}`
+          )
+        );
   if (args.startsWith("ls-files --others --exclude-standard -- "))
-    return ran(0, path in git.untracked ? `${name}\n` : "");
+    return ran(0, lines(named(Object.keys(git.untracked)), nameOf));
   if (args.startsWith("ls-files --others --ignored --exclude-standard -- "))
-    return ran(0, git.ignored.includes(path) ? `${name}\n` : "");
+    return ran(0, lines(named(git.ignored), nameOf));
   if (args.startsWith("diff --numstat --no-index -- /dev/null ")) {
-    const lines = git.untracked[path];
-    return lines === undefined ? ran(0) : ran(1, `${lines}\t0\t${name}\n`);
+    const count = git.untracked[path] ?? git.staged[path];
+    return count === undefined ? ran(0) : ran(1, `${count}\t0\t${name}\n`);
   }
   return ran(129, "", `unknown git command: ${args}`);
 }
@@ -556,6 +631,10 @@ export async function boot(
       fsmonitor: null,
       fsmonitorRuns: [],
       dirs: [],
+      staged: {},
+      isUnborn: false,
+      isTimingOut: false,
+      indexWrites: [],
     },
     opened: [],
     opens: [],
@@ -574,6 +653,7 @@ export async function boot(
     background: [],
     gone: new Set(),
     isAgentsDown: false,
+    agents: { statuses: new Map(), listDelayMs: 0, lists: 0 },
   };
   // The plugin's store, in memory and in insertion order as the engine keeps it; every write is
   // noted, and refused when it would take the store over its limit.
@@ -647,7 +727,11 @@ export async function boot(
   on("session.compact", ($, e) => ({ messages: e.messages } as never));
 
   on("process.run", async ($, e) => {
-    if (e.argv[0] === "git") return { value: runGit(harness.git, e.argv) };
+    // Past its timeout the host kills git, and the mod's call rejects.
+    if (e.argv[0] === "git")
+      return harness.git.isTimingOut
+        ? { deny: "git ran past its timeout" }
+        : { value: runGit(harness.git, e.argv) };
     if (e.argv[0] === "rm") return { value: runRm(harness, e.argv) };
     if (e.argv[0] === "claude") return { value: runAgents(harness, e.argv) };
     if (harness.zellij.delayMs > 0) await clock.sleep(harness.zellij.delayMs);
@@ -732,20 +816,25 @@ export async function boot(
   on("session.id", () => ({ value: harness.sessionId }));
   // Claude Code starts a subagent for an Agent tool call: its loop's events carry this id, and
   // `$.agent.list()` lists it running until its loop's turn ends.
-  const agentStatuses = new Map<string, "running" | "completed">();
+  const agentStatuses = harness.agents.statuses;
   on("agent.spawn", () => {
     const agentId = `agent-${agentStatuses.size + 1}`;
     agentStatuses.set(agentId, "running");
     return { model: "claude-opus-5-5", agentId };
   });
-  on("agent.list", () => ({
-    value: [...agentStatuses].map(([id, status]) => ({
-      id,
-      description: id,
-      type: "general-purpose",
-      status,
-    })),
-  }));
+  on("agent.list", async () => {
+    harness.agents.lists++;
+    if (harness.agents.listDelayMs > 0)
+      await clock.sleep(harness.agents.listDelayMs);
+    return {
+      value: [...agentStatuses].map(([id, status]) => ({
+        id,
+        description: id,
+        type: "general-purpose",
+        status,
+      })),
+    };
+  });
   on("command.register", ($, e) => ({ value: { command: e.name } }));
   // Claude Code's /rename: the session's registry entry takes the new name.
   on("command.run", { command: "rename" }, ($, e) => {

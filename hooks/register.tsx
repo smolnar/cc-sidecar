@@ -48,7 +48,7 @@ import {
   resolvePath,
   worktreeOf,
 } from "./git";
-import type { LineCounts } from "./git";
+import type { Counted } from "./git";
 import {
   GLYPH,
   applyTool,
@@ -444,10 +444,16 @@ async function lookAtAgents($: EngineInterface): Promise<void> {
     const statuses = new Map(
       (await $.agent.list()).map((agent) => [agent.id, agent.status])
     );
-    const kept = running.filter((run) =>
-      UNDER_WAY.has(statuses.get(run.id) ?? "")
+    // Only the rows Claude Code says ended go: one that started while it answered stays, as does what came in meanwhile.
+    const ended = new Set(
+      running
+        .filter((run) => !UNDER_WAY.has(statuses.get(run.id) ?? ""))
+        .map((run) => run.id)
     );
-    if (kept.length !== running.length) await update($, agents, () => kept);
+    if (ended.size > 0)
+      await update($, agents, (current) =>
+        current.filter((run) => !ended.has(run.id))
+      );
   } catch {
     // The rows stay until the next look.
   }
@@ -587,12 +593,15 @@ async function refreshRepo($: EngineInterface): Promise<void> {
   try {
     const cwd = await $.session.cwd();
     const status = await repoStatus($, cwd);
-    const tree = status === null ? null : await worktreeOf($, cwd);
+    const tree =
+      status === null || status === "unknown" ? null : await worktreeOf($, cwd);
+    // Git failed or ran past its timeout: the footer keeps what it showed.
+    if (status === "unknown" || tree === "unknown") return;
     const next: Repo | null =
       status === null
         ? null
         : {
-            ...parseStatus(status),
+            ...parseStatus(status.output),
             worktree:
               tree === null
                 ? null
@@ -740,41 +749,41 @@ async function persistWork($: EngineInterface): Promise<void> {
 const FILE_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 
 /**
- * A changed file's lines as git counts them; null where git doesn't know the
- * file (outside a repository, or one .gitignore leaves out) or may not run.
+ * A changed file's lines as git counts them; `off` where git doesn't know the
+ * file (outside a repository, or one .gitignore leaves out) or may not run;
+ * `unknown` where git failed or ran past its timeout.
  * Git runs only for a file in the session's folder or one added with /add-dir:
  * a repository elsewhere could run its own commands through git.
  */
-async function gitCounts(
-  $: EngineInterface,
-  path: string
-): Promise<LineCounts | null> {
+async function gitCounts($: EngineInterface, path: string): Promise<Counted> {
   try {
     const cwd = await $.session.cwd();
     const resolved = resolvePath(path, cwd);
     const isOwn =
       resolved !== null &&
       isInside(resolved, [cwd, ...(await read($, addedDirs))]);
-    return isOwn ? await countLines($, resolved) : null;
+    return isOwn ? await countLines($, resolved) : "off";
   } catch {
-    return null;
+    return "unknown";
   }
 }
 
-/** The record with the file at `path` given git's counts, or off the list where git has none. */
-const withCounts = (
-  record: Work,
-  path: string,
-  counts: LineCounts | null
-): Work => ({
-  ...record,
-  files:
-    counts === null
-      ? record.files.filter((file) => file.path !== path)
-      : record.files.map((file) =>
-          file.path === path ? { ...file, ...counts } : file
-        ),
-});
+/**
+ * The record with the file at `path` given git's counts: off the list where git
+ * keeps no such file, as it was where git said nothing.
+ */
+const withCounts = (record: Work, path: string, counts: Counted): Work => {
+  if (counts === "unknown") return record;
+  return {
+    ...record,
+    files:
+      counts === "off"
+        ? record.files.filter((file) => file.path !== path)
+        : record.files.map((file) =>
+            file.path === path ? { ...file, ...counts } : file
+          ),
+  };
+};
 
 /**
  * Lists the file a tool call changed first, with git's counts. The list holds
@@ -796,18 +805,19 @@ async function listChanged(
 /**
  * Counts every listed file with git again as a turn ends, so a commit or the
  * person's own edits since Claude's show, and a file git no longer knows
- * leaves the list.
+ * leaves the list. A file git says nothing of, failing or slow, keeps its row.
  */
 async function recountFiles($: EngineInterface): Promise<void> {
   try {
     for (const { path } of (await read($, work)).files) {
       const counts = await gitCounts($, path);
+      if (counts === "unknown") continue;
       const listed = (await read($, work)).files.find(
         (file) => file.path === path
       );
       if (
         listed === undefined ||
-        (counts !== null &&
+        (counts !== "off" &&
           listed.added === counts.added &&
           listed.removed === counts.removed)
       )

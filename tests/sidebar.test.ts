@@ -1197,6 +1197,27 @@ describe("the footer", () => {
     await briefed(h, $);
   }
 
+  test("keeps the branch and its marks when git status times out", async ($, on) => {
+    const h = await boot($, on);
+    h.git.status =
+      "# branch.oid 1a2b\n# branch.head feat/gauges\n1 .M N... 100644 100644 100644 a b src/a.ts\n";
+    await briefed(h, $);
+    await h.clock.settle();
+    const footer = async () => {
+      const panel = await mountPanel($, { bodyColumns: 44 });
+      const lines = (await shown(panel)).split("\n");
+      await panel.unmount();
+      return lines;
+    };
+    expect(await footer()).toContain("~/.dotfiles:feat/gauges !1");
+
+    h.git.isTimingOut = true;
+    await runTurn($, { prompt: "anything else?", answer: "No." });
+    await h.clock.settle();
+
+    expect(await footer()).toContain("~/.dotfiles:feat/gauges !1");
+  });
+
   test("names the worktree under the main repository's path and branch", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
     await inWorktree(h, $);
@@ -1827,6 +1848,20 @@ describe("git, in the session's own folders only", () => {
     expect(section(await panelLines($), "CHANGED")[0]).toContain("+12");
   });
 
+  test("leaves .git/index alone, so a commit the person runs meanwhile finds no lock", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+    h.git.changed[`${CWD}/app.rb`] = "12\t3";
+
+    const turnId = await startTurn($, "edit it");
+    await $.tool.call(edit(`${CWD}/app.rb`));
+    await endTurn($, turnId, { answer: "Done." });
+    await h.clock.settle();
+
+    expect(section(await panelLines($), "CHANGED")[0]).toContain("+12");
+    expect(h.git.indexWrites).toEqual([]);
+  });
+
   test("runs no git outside the session's folder, and leaves those files off the list", async ($, on) => {
     const h = await boot($, on);
     await briefed(h, $);
@@ -2049,6 +2084,113 @@ describe("changed files' counts", () => {
     await h.clock.settle();
 
     expect(await changedCounts($)).toBe("1 file");
+  });
+
+  test("counts a file whose name reads as a pattern as itself, not as the files the pattern names", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+    h.git.changed[`${CWD}/docs/v[12].md`] = "8\t0";
+    // The person's own edit to a file `v[12].md` names as a pattern.
+    h.git.changed[`${CWD}/docs/v1.md`] = "30\t5";
+
+    await startTurn($, "write the notes for v12");
+    await $.tool.call(edit(`${CWD}/docs/v[12].md`));
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("+8 · 1 file");
+  });
+
+  test("keeps a file put back as it was on the list when an ignored file's name matches it as a pattern", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+    h.git.ignored.push(`${CWD}/docs/v1.md`);
+
+    await startTurn($, "edit the notes, then undo");
+    await $.tool.call(edit(`${CWD}/docs/v[12].md`));
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("1 file");
+  });
+
+  test("keeps a file and its counts when git times out as the turn ends", async ($, on) => {
+    const h = await boot($, on);
+    await editedApp(h, $);
+
+    h.git.isTimingOut = true;
+    await runTurn($, { prompt: "anything else?", answer: "No." });
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("+12 −3 · 1 file");
+  });
+
+  test("lists a file Claude edits while git times out, and counts it once git answers again", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+    h.git.changed[`${CWD}/app.rb`] = "4\t1";
+    h.git.isTimingOut = true;
+
+    const turnId = await startTurn($, "edit it");
+    await $.tool.call(edit(`${CWD}/app.rb`));
+    await endTurn($, turnId, { answer: "Done." });
+    await h.clock.settle();
+    expect(await changedCounts($)).toBe("1 file");
+
+    h.git.isTimingOut = false;
+    await runTurn($, { prompt: "anything else?", answer: "No." });
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("+4 −1 · 1 file");
+  });
+
+  /** A repository `git init` made, with no commit yet. */
+  async function unborn(h: Harness, $: Engine): Promise<void> {
+    h.git.isUnborn = true;
+    h.git.status = "# branch.oid (initial)\n# branch.head main\n";
+    await briefed(h, $);
+  }
+
+  test("counts every line of a file Claude writes in a repository with no commit yet", async ($, on) => {
+    const h = await boot($, on);
+    await unborn(h, $);
+    h.git.untracked[`${CWD}/index.html`] = 12;
+
+    await startTurn($, "start the site");
+    await $.tool.call({
+      tool: "Write",
+      file_path: `${CWD}/index.html`,
+      content: "<p>hi</p>\n",
+    });
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("+12 · 1 file");
+  });
+
+  test("counts every line of a file already added to a repository with no commit yet", async ($, on) => {
+    const h = await boot($, on);
+    await unborn(h, $);
+    h.git.staged[`${CWD}/app.js`] = 30;
+
+    await startTurn($, "edit the app");
+    await $.tool.call(edit(`${CWD}/app.js`));
+    await h.clock.settle();
+
+    expect(await changedCounts($)).toBe("+30 · 1 file");
+  });
+
+  test("leaves a file .gitignore leaves out off the list in a repository with no commit yet", async ($, on) => {
+    const h = await boot($, on);
+    await unborn(h, $);
+    h.git.ignored.push(`${CWD}/dist/app.js`);
+
+    await startTurn($, "build it");
+    await $.tool.call({
+      tool: "Write",
+      file_path: `${CWD}/dist/app.js`,
+      content: "x\n",
+    });
+    await h.clock.settle();
+
+    expect(section(await panelLines($), "CHANGED")).toEqual([]);
   });
 });
 
@@ -2407,5 +2549,35 @@ describe("subagents", () => {
 
     expect(rolledAt.agents).toBeDefined();
     expect(rolledAt.agents ?? 0).toBeGreaterThan(rolledAt.now ?? 0);
+  });
+
+  test("keeps a subagent that starts while the mod asks which still run, and drops one stopped with no turn", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+    await startTurn($, "research it");
+    const terminal = await spawnAgent($, "Terminal tools");
+    const social = await spawnAgent($, "Social buzz");
+    h.agents.statuses.set(social, "killed");
+    h.agents.listDelayMs = 5 * SECOND;
+
+    // On to the next look, which waits on Claude Code's answer.
+    const lists = h.agents.lists;
+    for (let i = 0; i < 10 && h.agents.lists === lists; i++)
+      await h.clock.advance(SECOND);
+    await spawnAgent($, "Forum threads");
+    await $.tool.call({
+      tool: "WebSearch",
+      query: "issue trackers",
+      agentId: terminal,
+    } as never);
+    h.agents.listDelayMs = 0;
+    await h.clock.advance(5 * SECOND);
+    const agents = section(await panelLines($, 60), "AGENTS");
+
+    expect(h.agents.lists).toBeGreaterThan(lists);
+    expect(agents[0]).toMatch(/^AGENTS +2 running$/);
+    expect(agents.join("\n")).toContain("Forum threads");
+    expect(agents.join("\n")).toContain("Searching the web for issue trackers");
+    expect(agents.join("\n")).not.toContain("Social buzz");
   });
 });

@@ -89,10 +89,16 @@ The `themes/dock.json` theme pairs a light ANSI theme with a dark sidebar; pick 
 
 ## What it reads, writes and sends
 
-- **Model calls**, on your own Claude Code account: one small Haiku call per prompt to title the session, and one call on the session's model when you run `/brief refresh`.
-- **Network**: once an hour it reads `https://downloads.claude.ai/claude-code-releases/latest`, the feed Claude Code's updater reads, to colour the footer's dot when a newer release is out.
-- **Local files**: each session writes `~/.claude/sidecar/presence/<session id>.json` with its name, folder, state and pending question, so your other sessions can list it under Needs you. It reads Claude Code's own `~/.claude/sessions/` registry and runs `claude agents --json` for the same list, and removes presence files of sessions that ended.
-- **git** runs only in the session's folder and folders added with `/add-dir`, with the repository's fsmonitor, external diff and textconv drivers turned off.
+- **Model calls**, on your own Claude Code account:
+  - One small Haiku call per prompt to title the session. It sends your prompts in this session (the first and the eight newest, each cut to 500 characters, a pasted block cut to its first line) and the current title, and none of Claude's replies.
+  - One call on the session's model when you run `/brief refresh`, which sends the whole conversation again as a fork of it.
+- **Network**: it reads `https://downloads.claude.ai/claude-code-releases/latest`, the feed Claude Code's updater reads, to colour the footer's dot when a newer release is out. Each session reads it when it starts or after `/clear` or `/resume`, then once an hour. It's a plain GET that carries nothing of yours, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` doesn't turn it off.
+- **Local files**:
+  - Each session writes `~/.claude/sidecar/presence/<session id>.json`, so your other sessions can list it under Needs you: its name, folder, state, pending question, the last sentence of its reply, its zellij session and tab, and when it last finished and was seen. The file stays after the session ends, until another session removes it.
+  - It reads the `<pid>.json` entries of Claude Code's own `~/.claude/sessions/` registry and runs `claude agents --json` every 30 seconds for the same list. It removes (`rm -f`) the presence files of sessions that ended or that no session has written for an hour.
+  - It keeps each session's brief (title, story, steps and plan) and its work (the todo list and the paths of the files Claude changed) in the plugin's store, a JSON file in Claude Code's configuration folder, for the 200 newest sessions, so a resumed session shows them again.
+- **git** runs in the session's folder for the footer, and in the folder of each file Claude changes when that folder lies in the session's folder or one added with `/add-dir`. That check reads the path as spelled: a symlink inside those folders can lead git to a repository elsewhere, and a repository nested inside them is used as it is. The repository's fsmonitor, external diff and textconv drivers are turned off, but a filter driver its config names (`filter.<name>.clean`) still runs, as it does for your own `git diff`. git never writes `.git/index`, so it doesn't hold the lock a commit of yours needs.
+- **zellij**: inside zellij it renames its pane and tab, gives them their names back when the session ends, and asks every 10 seconds which tab is on screen.
 
 ## Developing
 
