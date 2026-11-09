@@ -246,7 +246,8 @@ describe("the sidebar's order", () => {
       "SPEED",
       "LIMITS",
       "NEEDS YOU",
-      "~/.dotfiles:main",
+      "~/.dotfiles",
+      " branch main",
     ].map(at);
 
     expect(lines[0]).toBe("Fuse gauges with near-limit bars");
@@ -1217,7 +1218,9 @@ describe("the footer", () => {
 
     const lines = await panelLines($);
 
-    expect(lines).toContain("~/.dotfiles:opencode-sidebar !2 ?1 ⇡1");
+    const where = lines.indexOf("~/.dotfiles");
+    expect(where).toBeGreaterThan(-1);
+    expect(lines[where + 1]).toBe(" branch opencode-sidebar !2 ?1 ⇡1");
     expect(lines).toContain("● Claude Code 2.1.300 · Opus 5.5 · xhigh");
   });
 
@@ -1229,6 +1232,7 @@ describe("the footer", () => {
     const lines = await panelLines($);
 
     expect(lines).toContain("~/.dotfiles");
+    expect(lines.some((line) => line.includes("branch"))).toBe(false);
     expect(lines.some((line) => line.startsWith("⎇"))).toBe(false);
   });
 
@@ -1259,25 +1263,41 @@ describe("the footer", () => {
       await panel.unmount();
       return lines;
     };
-    expect(await footer()).toContain("~/.dotfiles:feat/gauges !1");
+    expect(await footer()).toContain(" branch feat/gauges !1");
 
     h.git.isTimingOut = true;
     await runTurn($, { prompt: "anything else?", answer: "No." });
     await h.clock.settle();
 
-    expect(await footer()).toContain("~/.dotfiles:feat/gauges !1");
+    expect(await footer()).toContain(" branch feat/gauges !1");
   });
 
-  test("names the worktree under the main repository's path and branch", async ($, on) => {
+  test("names the branch above the worktree, under the main repository's path", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
     await inWorktree(h, $);
 
     const lines = await panelLines($, 60);
-    const where = lines.indexOf("~/.dotfiles:feat/fit-dock");
+    const where = lines.indexOf("~/.dotfiles");
 
     expect(where).toBeGreaterThan(-1);
-    expect(lines[where + 1]).toBe("⎇ worktree fit-dock");
-    expect(lines[where + 2]).toBe("● Claude Code 2.1.300 · Opus 5.5");
+    expect(lines[where + 1]).toBe(" branch feat/fit-dock");
+    expect(lines[where + 2]).toBe("⎇ worktree fit-dock");
+    expect(lines[where + 3]).toBe("● Claude Code 2.1.300 · Opus 5.5");
+  });
+
+  test("cuts a long branch at the panel's edge and leaves the path whole", async ($, on) => {
+    const h = await boot($, on);
+    h.git.status =
+      "# branch.oid 1a2b\n# branch.head feat/a-branch-name-far-too-long-for-the-panel\n? notes.md\n";
+    await briefed(h, $);
+    await h.clock.settle();
+
+    const lines = await panelLines($, 30);
+    const where = lines.indexOf("~/.dotfiles");
+
+    expect(where).toBeGreaterThan(-1);
+    expect(lines[where + 1]?.startsWith(" branch feat/a-branch")).toBe(true);
+    expect([...(lines[where + 1] ?? "")].length).toBeLessThanOrEqual(30);
   });
 
   test("leaves no row for a worktree in a normal checkout", async ($, on) => {
@@ -1285,9 +1305,11 @@ describe("the footer", () => {
     await briefed(h, $);
 
     const lines = await panelLines($, 60);
-    const where = lines.indexOf("~/.dotfiles:main");
+    const where = lines.indexOf("~/.dotfiles");
 
-    expect(lines[where + 1]).toBe("● Claude Code 2.1.300 · Opus 5.5");
+    expect(where).toBeGreaterThan(-1);
+    expect(lines[where + 1]).toBe(" branch main");
+    expect(lines[where + 2]).toBe("● Claude Code 2.1.300 · Opus 5.5");
     expect(lines.some((line) => line.startsWith("⎇"))).toBe(false);
   });
 
@@ -1303,8 +1325,9 @@ describe("the footer", () => {
       const lines = (await shown(panel)).split("\n");
       await panel.unmount();
 
-      expect(lines.slice(-3)).toEqual([
-        "~/.dotfiles:feat/fit-dock",
+      expect(lines.slice(-4)).toEqual([
+        "~/.dotfiles",
+        " branch feat/fit-dock",
         "⎇ worktree fit-dock",
         "● Claude Code 2.1.300 · Opus 5.5",
       ]);
@@ -2073,7 +2096,7 @@ describe("a conversation the mod never saw start", () => {
     const lines = await drawnTwice(h, $);
 
     expect(lines).toContain("● Claude Code 2.1.300 · Opus 5.5");
-    expect(lines.some((line) => line.startsWith("~/.dotfiles:main"))).toBe(
+    expect(lines.includes("~/.dotfiles") && lines.includes(" branch main")).toBe(
       true
     );
   });
@@ -2753,7 +2776,7 @@ describe("the footer's path", () => {
     const lines = await linesAfterSetUp(h, $);
 
     expect(
-      lines.some((line) => line.startsWith("/home/developer/proj:main"))
+      lines.includes("/home/developer/proj")
     ).toBe(true);
   });
 });

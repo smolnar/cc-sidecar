@@ -79,6 +79,7 @@ import {
   titledBrief,
 } from "./title";
 import {
+  BRANCH,
   GROWTH_KEPT,
   SPEEDS_KEPT,
   bar,
@@ -93,6 +94,7 @@ import {
   fitBlocks,
   foldedDone,
   gap,
+  gitMarks,
   isShownLimit,
   limitName,
   limitTone,
@@ -105,7 +107,6 @@ import {
   short,
   sparkline,
   speedSummary,
-  whereLine,
   wrapText,
 } from "./sidebar";
 import type { ListWindow, Note, Tone } from "./sidebar";
@@ -1762,8 +1763,9 @@ export const register: Register = (on, options) => {
           ).map((part, i) => text(`title-${i}`, part, { dim: true }))
         : [text("title", title, { bold: true })];
     const stateRows: Row[] = state === null ? [] : [line("state", [state])];
-    // In a linked worktree the path is the main repository's, and the worktree is named under it.
+    // In a linked worktree the path is the main repository's; the branch, then the worktree, follow it.
     const worktree = repoNow?.worktree ?? null;
+    const marks = repoNow === null ? "" : gitMarks(repoNow);
     const footerRows: Row[] =
       engine === null
         ? []
@@ -1780,11 +1782,17 @@ export const register: Register = (on, options) => {
                     },
                     { text: " · ", dim: true },
                   ]),
-              {
-                text: whereLine(worktree?.main ?? engine.path, repoNow),
-                dim: true,
-              },
+              { text: worktree?.main ?? engine.path, dim: true },
             ]),
+            ...(repoNow === null
+              ? []
+              : [
+                  line("branch", [
+                    { text: `${BRANCH} branch `, dim: true },
+                    { text: repoNow.branch },
+                    ...(marks === "" ? [] : [{ text: ` ${marks}`, dim: true }]),
+                  ]),
+                ]),
             ...(worktree === null
               ? []
               : [

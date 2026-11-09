@@ -173,7 +173,7 @@ describe("sessions of other profiles that need you", () => {
 
     expect(rows).toContain("Bookshelf plans");
     expect(rows).not.toContain("Billing migration");
-    expect(await panelLines($)).toContain("~/.dotfiles:main");
+    expect(await panelLines($)).toContain("~/.dotfiles");
   });
 
   test("labels no session of its own profile, and counts its own profile once", async ($, on) => {
@@ -324,7 +324,7 @@ describe("the session's own profile", () => {
     setProfiles(h);
     await briefed(h, $);
 
-    expect(await panelLines($)).toContain("Personal · ~/.dotfiles:main");
+    expect(await panelLines($)).toContain("Personal · ~/.dotfiles");
     expect(await colourOf($, "Personal")).toBe(FIRST_COLOUR);
   });
 
@@ -337,7 +337,7 @@ describe("the session's own profile", () => {
     expect(Object.keys(h.files)).toContain(
       `${CONFIG}/sidecar/presence/${h.sessionId}.json`
     );
-    expect(await panelLines($)).toContain("Personal · ~/.dotfiles:main");
+    expect(await panelLines($)).toContain("Personal · ~/.dotfiles");
   });
 
   test("names a session run with CLAUDE_CONFIG_DIR after that folder's profile, a trailing slash or not", async ($, on) => {
@@ -351,7 +351,7 @@ describe("the session's own profile", () => {
     await briefed(h, $);
     await h.clock.advance(MINUTE);
 
-    expect(await panelLines($)).toContain("Work · ~/.dotfiles:main");
+    expect(await panelLines($)).toContain("Work · ~/.dotfiles");
     expect(Object.keys(h.files)).toContain(
       `${WORK}/sidecar/presence/${h.sessionId}.json`
     );
@@ -362,7 +362,7 @@ describe("the session's own profile", () => {
     setProfiles(h, { personal: { path: "~/.claude" } });
     await briefed(h, $);
 
-    expect(await panelLines($)).toContain("personal · ~/.dotfiles:main");
+    expect(await panelLines($)).toContain("personal · ~/.dotfiles");
   });
 
   test("paints a profile the colour the profiles file names, and the default for one that is no colour", async ($, on) => {
@@ -404,7 +404,7 @@ describe("the session's own profile", () => {
     await h.clock.advance(POLL);
 
     expect(await needsRows($)).toEqual([]);
-    expect(await panelLines($)).toContain("personal · ~/.dotfiles:main");
+    expect(await panelLines($)).toContain("personal · ~/.dotfiles");
   });
 
   test("takes Claude Code's title in a session run with CLAUDE_CONFIG_DIR", async ($, on) => {
@@ -442,7 +442,7 @@ describe("without profiles", () => {
     const rows = section(lines, "NEEDS YOU").join("\n");
     expect(rows).toContain("Billing migration");
     expect(rows).not.toContain("Bookshelf plans");
-    expect(lines).toContain("~/.dotfiles:main");
+    expect(lines).toContain("~/.dotfiles");
     expect(Object.keys(h.files)).toContain(
       `${WORK}/sidecar/presence/${h.sessionId}.json`
     );

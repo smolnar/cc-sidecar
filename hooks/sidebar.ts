@@ -392,17 +392,18 @@ export function recentSteps(brief: Brief, now: number): string | null {
 
 // ---------- footer ----------
 
-/** The path and the repository's state: `~/.dotfiles:main !2 ?1 ⇡1`. */
-export function whereLine(path: string, repo: Repo | null): string {
-  if (repo === null) return path;
-  const marks = [
+/** The branch row's symbol: Powerline's branch, which every Nerd Font carries. */
+export const BRANCH = "\ue0a0";
+
+/** The repository's state after its branch: `!2 ?1 ⇡1`, empty when nothing is changed, untracked or ahead. */
+export function gitMarks(repo: Repo): string {
+  return [
     repo.changed > 0 ? `!${repo.changed}` : "",
     repo.untracked > 0 ? `?${repo.untracked}` : "",
     repo.ahead > 0 ? `⇡${repo.ahead}` : "",
-  ].filter((mark) => mark !== "");
-  return `${path}:${repo.branch}${
-    marks.length === 0 ? "" : ` ${marks.join(" ")}`
-  }`;
+  ]
+    .filter((mark) => mark !== "")
+    .join(" ");
 }
 
 /** Whether `latest` is a newer release than the running `version`; false when either is unknown. */
