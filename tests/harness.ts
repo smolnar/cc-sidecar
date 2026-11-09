@@ -7,6 +7,7 @@ import type {
   ModelForkRequest,
   ModelForkResult,
   On,
+  ProcessRunInit,
   RenderNode,
   RenderPropsOf,
 } from "claude-code";
@@ -102,10 +103,16 @@ export type FakeGit = {
 /** The person's home, and the repository the session runs in, under it. */
 export const HOME = "/home/dev";
 export const CWD = `${HOME}/.dotfiles`;
-/** Where sessions keep their presence files. */
-export const PRESENCE = `${HOME}/.claude/sidecar/presence`;
-/** Where Claude Code registers every running session: one `<pid>.json` each. */
-export const SESSIONS = `${HOME}/.claude/sessions`;
+/** Claude Code's configuration folder when `CLAUDE_CONFIG_DIR` is not set. */
+export const CONFIG = `${HOME}/.claude`;
+/** Where sessions of the default configuration folder keep their presence files. */
+export const PRESENCE = `${CONFIG}/sidecar/presence`;
+/** Where Claude Code registers every running session of that folder: one `<pid>.json` each. */
+export const SESSIONS = `${CONFIG}/sessions`;
+
+/** A configuration folder as Claude Code uses it: `CLAUDE_CONFIG_DIR` without its trailing slash. */
+export const configDirOf = (dir: string): string =>
+  dir.length > 1 ? dir.replace(/\/+$/, "") : dir;
 /** This session's process, as Claude Code's registry names it. */
 export const PID = 4242;
 
@@ -125,13 +132,17 @@ export type RegistryEntry = {
   statusUpdatedAt: number;
 };
 
-/** Writes a session's registry entry, as Claude Code does when its state changes. */
+/**
+ * Writes a session's registry entry, as Claude Code does when its state
+ * changes, in the registry of its configuration folder: this session's unless said.
+ */
 export function register(
   harness: Harness,
-  entry: Partial<RegistryEntry> & { pid: number; sessionId: string }
+  entry: Partial<RegistryEntry> & { pid: number; sessionId: string },
+  configDir = harness.configDir
 ): void {
   const now = harness.clock.now();
-  const path = `${SESSIONS}/${entry.pid}.json`;
+  const path = `${configDir}/sessions/${entry.pid}.json`;
   const before = JSON.parse(
     harness.files[path] ?? "{}"
   ) as Partial<RegistryEntry>;
@@ -219,6 +230,10 @@ export type Harness = {
   gone: Set<string>;
   /** While true, `claude agents` fails, as one too old to know `--json` does. */
   isAgentsDown: boolean;
+  /** The configuration folders `claude agents` fails under, as one whose login is broken might. */
+  agentsDownIn: Set<string>;
+  /** This session's configuration folder: `CLAUDE_CONFIG_DIR`, else `~/.claude`. */
+  configDir: string;
   /**
    * The subagents Claude Code runs, by id, as `$.agent.list()` reports them, how long that call
    * takes on the mocked clock (0 answers at once), and how many times the mod made it.
@@ -238,6 +253,8 @@ export type BackgroundSession = {
   name: string;
   startedAt: number;
   state: "running" | "blocked" | "done";
+  /** The configuration folder it runs under; this session's when left out. */
+  configDir?: string;
 };
 
 /** How much JSON text a store holds, as the engine measures it against its 4 MiB. */
@@ -384,20 +401,33 @@ function runGit(git: FakeGit, argv: readonly string[]) {
 const FLAGS = new Set(["-p", "-j", "-t"]);
 
 /**
- * `claude agents --json`: the active sessions, the terminal ones from the
- * registry (less those gone) and the ones running on their own.
+ * `claude agents --json`: the active sessions of the configuration folder it
+ * runs under (`CLAUDE_CONFIG_DIR`, else the session's own), the terminal ones
+ * from that folder's registry (less those gone) and the ones running on their own.
  */
-function runAgents(harness: Harness, argv: readonly string[]) {
-  if (harness.isAgentsDown || argv.join(" ") !== "claude agents --json")
+function runAgents(
+  harness: Harness,
+  argv: readonly string[],
+  init: ProcessRunInit | undefined
+) {
+  const configDir = configDirOf(
+    init?.env?.CLAUDE_CONFIG_DIR ?? harness.configDir
+  );
+  if (
+    harness.isAgentsDown ||
+    harness.agentsDownIn.has(configDir) ||
+    argv.join(" ") !== "claude agents --json"
+  )
     return {
       ...RAN,
       exitCode: 1,
       stdout: "",
       stderr: "error: unknown option '--json'",
     };
+  const sessions = `${configDir}/sessions`;
   const interactive = Object.keys(harness.files)
-    .filter((path) => /^\d+\.json$/.test(path.slice(SESSIONS.length + 1)))
-    .filter((path) => path.startsWith(`${SESSIONS}/`))
+    .filter((path) => /^\d+\.json$/.test(path.slice(sessions.length + 1)))
+    .filter((path) => path.startsWith(`${sessions}/`))
     .map((path) => JSON.parse(harness.files[path] ?? "{}") as RegistryEntry)
     .filter((entry) => !harness.gone.has(entry.sessionId))
     .map((entry) => ({
@@ -409,10 +439,12 @@ function runAgents(harness: Harness, argv: readonly string[]) {
       name: entry.name,
       status: entry.status,
     }));
-  const background = harness.background.map((session) => ({
-    ...session,
-    kind: "background",
-  }));
+  const background = harness.background
+    .filter((session) => (session.configDir ?? harness.configDir) === configDir)
+    .map(({ configDir: _, ...session }) => ({
+      ...session,
+      kind: "background",
+    }));
   return {
     ...RAN,
     exitCode: 0,
@@ -653,6 +685,8 @@ export async function boot(
     background: [],
     gone: new Set(),
     isAgentsDown: false,
+    agentsDownIn: new Set(),
+    configDir: configDirOf(env.CLAUDE_CONFIG_DIR ?? CONFIG),
     agents: { statuses: new Map(), listDelayMs: 0, lists: 0 },
   };
   // The plugin's store, in memory and in insertion order as the engine keeps it; every write is
@@ -733,7 +767,8 @@ export async function boot(
         ? { deny: "git ran past its timeout" }
         : { value: runGit(harness.git, e.argv) };
     if (e.argv[0] === "rm") return { value: runRm(harness, e.argv) };
-    if (e.argv[0] === "claude") return { value: runAgents(harness, e.argv) };
+    if (e.argv[0] === "claude")
+      return { value: runAgents(harness, e.argv, e.init) };
     if (harness.zellij.delayMs > 0) await clock.sleep(harness.zellij.delayMs);
     return { value: runZellij(harness.zellij, e.argv) };
   });
@@ -1156,13 +1191,17 @@ export function otherSession(
     said?: string;
     /** What it waits for, as its Claude Code tells the registry ("dialog open", "permission prompt"). */
     waitingFor?: string;
+    /** The configuration folder it runs under; this session's when left out. */
+    configDir?: string;
   }
 ): void {
   const now = harness.clock.now();
   const cwd = fields.cwd ?? `${HOME}/projects/notes`;
   const updatedAt = fields.updatedAt ?? now;
-  harness.mtimes[`${PRESENCE}/${fields.id}.json`] = updatedAt;
-  harness.files[`${PRESENCE}/${fields.id}.json`] = JSON.stringify({
+  const configDir = fields.configDir ?? harness.configDir;
+  const presence = `${configDir}/sidecar/presence/${fields.id}.json`;
+  harness.mtimes[presence] = updatedAt;
+  harness.files[presence] = JSON.stringify({
     sessionId: fields.id,
     name: fields.name,
     state: fields.state,
@@ -1181,21 +1220,25 @@ export function otherSession(
     said: fields.said ?? "",
   });
   if (fields.isEnded === true || now - updatedAt > 3 * MINUTE) return;
-  register(harness, {
-    pid: ++otherPids,
-    sessionId: fields.id,
-    cwd,
-    name: fields.name,
-    status:
-      fields.waitingFor !== undefined
-        ? "waiting"
-        : fields.state === "working"
-        ? "busy"
-        : "idle",
-    ...(fields.waitingFor === undefined
-      ? {}
-      : { waitingFor: fields.waitingFor }),
-  });
+  register(
+    harness,
+    {
+      pid: ++otherPids,
+      sessionId: fields.id,
+      cwd,
+      name: fields.name,
+      status:
+        fields.waitingFor !== undefined
+          ? "waiting"
+          : fields.state === "working"
+          ? "busy"
+          : "idle",
+      ...(fields.waitingFor === undefined
+        ? {}
+        : { waitingFor: fields.waitingFor }),
+    },
+    configDir
+  );
 }
 
 /** Ends the session as Claude Code does when the person quits. */

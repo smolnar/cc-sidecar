@@ -62,7 +62,12 @@ import {
   titleOf,
 } from "./live";
 import { readOthers, writePresence } from "./presence";
-import { listActive, readRegistry } from "./registry";
+import {
+  allProfiles,
+  listActive,
+  readProfiles,
+  readRegistry,
+} from "./registry";
 import type { Active, Registered } from "./registry";
 import {
   TITLE_MODEL,
@@ -357,29 +362,38 @@ async function publishPresence(
   isEnded = false
 ): Promise<void> {
   try {
+    const profiles = await readProfiles($);
     const presence = await presenceNow($, isEnded);
-    if (presence !== null) await writePresence($, presence);
+    if (profiles !== null && presence !== null)
+      await writePresence($, profiles.own, presence);
   } catch {
     // The others see this session again at its next write.
   }
 }
 
-/** What `claude agents` last called active; null until it answers, and while it fails. */
-let active: Active | null = null;
+/**
+ * What `claude agents` last called active, by profile folder; a folder is
+ * missing until its answer comes, and null while it fails.
+ */
+let active: ReadonlyMap<string, Active | null> = new Map();
 
 /**
- * Reads Claude Code's registry and the presence files: follows Claude Code's
- * title for this session, and redraws the others only when something changed.
+ * Reads Claude Code's registry and the presence files of every profile:
+ * follows Claude Code's title for this session, and redraws the others only
+ * when something changed.
  */
 async function lookAtOthers($: EngineInterface): Promise<void> {
   try {
-    const registry = await readRegistry($);
+    const profiles = await readProfiles($);
+    if (profiles === null) return;
+    const registry = await readRegistry($, allProfiles(profiles));
     await followTitle($, registry);
     const seen: Others = await readOthers(
       $,
       await $.session.id(),
       (await $.env.get("ZELLIJ_SESSION_NAME")) ?? null,
       await $.clock.now(),
+      profiles,
       registry,
       active
     );
@@ -391,9 +405,26 @@ async function lookAtOthers($: EngineInterface): Promise<void> {
   }
 }
 
-/** Asks `claude agents` which sessions are running, then looks again with its answer. */
+/** Asks each profile's `claude agents` which sessions are running, then looks again with the answers. */
 async function lookAtActive($: EngineInterface): Promise<void> {
-  active = await listActive($, await $.clock.now());
+  try {
+    const profiles = await readProfiles($);
+    if (profiles !== null) {
+      const at = await $.clock.now();
+      const answers = await Promise.all(
+        allProfiles(profiles).map(
+          async (profile) =>
+            [
+              profile.dir,
+              await listActive($, at, profile, profile === profiles.own),
+            ] as const
+        )
+      );
+      active = new Map(answers);
+    }
+  } catch {
+    // The last answers stand until the next ask.
+  }
   await lookAtOthers($);
 }
 
@@ -959,11 +990,10 @@ async function ownEntry(
   entries?: readonly Registered[]
 ): Promise<Registered | null> {
   const id = await $.session.id();
-  return (
-    (entries ?? (await readRegistry($))).find(
-      (entry) => entry.sessionId === id
-    ) ?? null
-  );
+  const profiles = entries === undefined ? await readProfiles($) : null;
+  const found =
+    entries ?? (profiles === null ? [] : await readRegistry($, [profiles.own]));
+  return found.find((entry) => entry.sessionId === id) ?? null;
 }
 
 /**
@@ -1574,6 +1604,7 @@ export const register: Register = (on, options) => {
     const lastMs = await read($, lastTurnMs);
     const endedAt = (await read($, lastTurnAt)) ?? current?.updatedAt ?? now;
     const elsewhere = await read($, others);
+    const ownProfile = (await readProfiles($))?.own ?? null;
     const repoNow = await read($, repo);
     const cached = await read($, cache);
     const ttl = await read($, cacheTtl);
@@ -1584,12 +1615,22 @@ export const register: Register = (on, options) => {
     const plan = planView(recorded, current);
     const title = titleOf(current, running?.prompt ?? "");
 
-    type Part = { text: string; tone?: Tone; bold?: boolean; dim?: boolean };
+    /** One run of text: a tone from the palette, or a profile's own `color`. */
+    type Part = {
+      text: string;
+      tone?: Tone;
+      color?: string;
+      bold?: boolean;
+      dim?: boolean;
+    };
     const parts = (key: string, list: Part[]) =>
       list.map((part, i) => (
         <Text
           key={`${key}-${i}`}
-          color={part.tone === undefined ? undefined : PALETTE[part.tone]}
+          color={
+            part.color ??
+            (part.tone === undefined ? undefined : PALETTE[part.tone])
+          }
           bold={part.bold}
           dimColor={part.dim}
         >
@@ -1727,9 +1768,23 @@ export const register: Register = (on, options) => {
       engine === null
         ? []
         : [
-            text("where", whereLine(worktree?.main ?? engine.path, repoNow), {
-              dim: true,
-            }),
+            // A profile named in the settings leads the line, in its colour.
+            line("where", [
+              ...(ownProfile === null || ownProfile.name === ""
+                ? []
+                : [
+                    {
+                      text: ownProfile.name,
+                      color: ownProfile.color,
+                      bold: true,
+                    },
+                    { text: " · ", dim: true },
+                  ]),
+              {
+                text: whereLine(worktree?.main ?? engine.path, repoNow),
+                dim: true,
+              },
+            ]),
             ...(worktree === null
               ? []
               : [
@@ -2085,6 +2140,13 @@ export const register: Register = (on, options) => {
             },
           ],
           [
+            // A session of another profile says which, in that profile's colour.
+            ...(session.profile === null
+              ? []
+              : [
+                  { text: session.profile.name, color: session.profile.color },
+                  { text: " · ", dim: true },
+                ]),
             {
               text: `${session.where} · ${
                 session.kind === "blocked"

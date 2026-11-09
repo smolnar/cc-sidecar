@@ -1,6 +1,6 @@
 {
   "name": "sidecar",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A sidecar for Claude Code: an OpenCode-style panel on the right with the title, recap, plan, now and subagents on top; changed files, context and cache, speed, limits and every session that needs you pinned to the bottom",
   "author": {
     "name": "Samuel Molnar"

@@ -2,7 +2,8 @@ import type { EngineInterface } from "claude-code";
 
 import type { Others, Presence, WaitingSession } from "../types";
 import { cut } from "./brief";
-import type { Active, Registered } from "./registry";
+import { allProfiles } from "./registry";
+import type { Active, Profile, Profiles, Registered } from "./registry";
 
 /** A session not heard from for this long is taken for gone. */
 const QUIET_AFTER = 3 * 60_000;
@@ -16,28 +17,23 @@ const QUESTION_MAX = 120;
 const STATES: readonly unknown[] = ["waiting", "working", "done"];
 
 /**
- * Where every session keeps its presence file, one file each, so no two
- * sessions ever write the same one; null without a home directory.
+ * Where the sessions of a profile keep their presence files, one file each, so
+ * no two sessions ever write the same one.
  */
-async function presenceDir($: EngineInterface): Promise<string | null> {
-  const home = await $.env.get("HOME");
-  return home === undefined || home === ""
-    ? null
-    : `${home}/.claude/sidecar/presence`;
-}
+const presenceDir = (profile: Profile): string =>
+  `${profile.dir}/sidecar/presence`;
 
-/** Writes this session's presence for the others to read; a failure changes nothing. */
+/** Writes this session's presence in its own profile's folder, for the others to read; a failure changes nothing. */
 export async function writePresence(
   $: EngineInterface,
+  own: Profile,
   presence: Presence
 ): Promise<void> {
   try {
-    const dir = await presenceDir($);
-    if (dir !== null)
-      await $.fs.write(
-        `${dir}/${presence.sessionId}.json`,
-        JSON.stringify(presence)
-      );
+    await $.fs.write(
+      `${presenceDir(own)}/${presence.sessionId}.json`,
+      JSON.stringify(presence)
+    );
   } catch {
     // The others just don't see this session until the next write.
   }
@@ -94,38 +90,50 @@ async function forget($: EngineInterface, paths: string[]): Promise<void> {
 }
 
 /**
- * The presence files of the other sessions, fresh ones by session id; files
- * of sessions that ended or left long ago are removed on the way.
+ * The presence files of the other sessions in every profile, fresh ones by
+ * session id; files of sessions that ended or left long ago are removed on
+ * the way, from the session's own profile only: each profile's sessions tidy their own.
  */
 async function readPresences(
   $: EngineInterface,
   selfId: string,
-  now: number
+  now: number,
+  profiles: Profiles
 ): Promise<Map<string, Presence>> {
   const fresh = new Map<string, Presence>();
-  const dir = await presenceDir($);
-  if (dir === null || !(await $.fs.exists(dir))) return fresh;
   const gone: string[] = [];
-  for (const entry of await $.fs.list(dir)) {
-    if (
-      entry.kind !== "file" ||
-      !entry.name.endsWith(".json") ||
-      entry.name === `${selfId}.json`
-    )
-      continue;
-    const path = `${dir}/${entry.name}`;
-    let presence: Presence | null = null;
+  for (const profile of allProfiles(profiles)) {
+    const isOwn = profile === profiles.own;
+    const dir = presenceDir(profile);
     try {
-      presence = asPresence(JSON.parse(String(await $.fs.read(path))));
+      if (!(await $.fs.exists(dir))) continue;
+      for (const entry of await $.fs.list(dir)) {
+        if (
+          entry.kind !== "file" ||
+          !entry.name.endsWith(".json") ||
+          entry.name === `${selfId}.json`
+        )
+          continue;
+        const path = `${dir}/${entry.name}`;
+        let presence: Presence | null = null;
+        try {
+          presence = asPresence(JSON.parse(String(await $.fs.read(path))));
+        } catch {
+          // A file being written right now reads again at the next look.
+        }
+        if (presence === null) {
+          if (isOwn && now - entry.mtimeMs > FORGET_AFTER) gone.push(path);
+        } else if (
+          presence.isEnded ||
+          now - presence.updatedAt > FORGET_AFTER
+        ) {
+          if (isOwn) gone.push(path);
+        } else if (now - presence.updatedAt <= QUIET_AFTER) {
+          fresh.set(presence.sessionId, presence);
+        }
+      }
     } catch {
-      // A file being written right now reads again at the next look.
-    }
-    if (presence === null) {
-      if (now - entry.mtimeMs > FORGET_AFTER) gone.push(path);
-    } else if (presence.isEnded || now - presence.updatedAt > FORGET_AFTER) {
-      gone.push(path);
-    } else if (now - presence.updatedAt <= QUIET_AFTER) {
-      fresh.set(presence.sessionId, presence);
+      // This folder is read again at the next look.
     }
   }
   await forget($, gone);
@@ -141,30 +149,38 @@ const PERMISSIONS: ReadonlySet<string> = new Set([
 /**
  * The other sessions and the ones that need the person, from Claude Code's
  * registry (every terminal session, sidecar or not), what `claude agents`
- * calls active (`active`; null when it can't say), and the sidecar's presence
- * files, which add a question's words, the zellij tab, and whether a session
- * finished out of sight. Those waiting come first, the longest-waiting first;
- * those finished unseen after them.
+ * calls active in each profile's folder (`active`, by folder; none there when
+ * it can't say), and the sidecar's presence files, which add a question's
+ * words, the zellij tab, and whether a session finished out of sight. A
+ * session of another profile carries that profile's name and colour. Those
+ * waiting come first, the longest-waiting first; those finished unseen after them.
  */
 export async function readOthers(
   $: EngineInterface,
   selfId: string,
   zellijSession: string | null,
   now: number,
+  profiles: Profiles,
   registry: readonly Registered[],
-  active: Active | null
+  active: ReadonlyMap<string, Active | null>
 ): Promise<Others> {
-  const presences = await readPresences($, selfId, now);
-  // A crashed session leaves its entry behind: claude agents no longer lists it.
-  const live = registry.filter(
-    (entry) =>
+  const presences = await readPresences($, selfId, now, profiles);
+  // A crashed session leaves its entry behind: its profile's claude agents no longer lists it.
+  const live = registry.filter((entry) => {
+    const listed = active.get(entry.profile.dir) ?? null;
+    return (
       entry.sessionId !== selfId &&
-      (active === null ||
-        active.sessionIds.has(entry.sessionId) ||
-        entry.updatedAt >= active.at)
-  );
+      (listed === null ||
+        listed.sessionIds.has(entry.sessionId) ||
+        entry.updatedAt >= listed.at)
+    );
+  });
   const waiting: WaitingSession[] = [];
   for (const entry of live) {
+    const profile =
+      entry.profile.dir === profiles.own.dir
+        ? null
+        : { name: entry.profile.name, color: entry.profile.color };
     const presence = presences.get(entry.sessionId);
     const name = cut(
       presence?.name || entry.name || folder(entry.cwd),
@@ -187,6 +203,7 @@ export async function readOthers(
         : "question";
       waiting.push({
         name,
+        profile,
         where,
         since: entry.since,
         kind,
@@ -196,6 +213,7 @@ export async function readOthers(
       // Its reply ended on a question: the turn is over, the person is asked.
       waiting.push({
         name,
+        profile,
         where,
         since: presence.since,
         kind: "question",
@@ -209,6 +227,7 @@ export async function readOthers(
     ) {
       waiting.push({
         name,
+        profile,
         where,
         since: presence.finishedAt,
         kind: "finished",
@@ -217,9 +236,9 @@ export async function readOthers(
     }
   }
   // Background sessions count as open, but one blocked on you is left out of NEEDS YOU for now.
-  const background = (active?.background ?? []).filter(
-    (session) => session.state !== "done"
-  );
+  const background = [...active.values()]
+    .flatMap((listed) => listed?.background ?? [])
+    .filter((session) => session.state !== "done");
   waiting.sort(
     (a, b) =>
       Number(a.kind === "finished") - Number(b.kind === "finished") ||

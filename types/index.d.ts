@@ -76,6 +76,8 @@ export type Limit = {
 /** Another session that needs the person, as Claude Code's registry and its sidecar say. */
 export type WaitingSession = {
   name: string;
+  /** The name and colour of its profile when that is another than this session's; null in this session's own. */
+  profile: { name: string; color: string } | null;
   /** Its zellij tab ("tab 3") in this zellij session, else its folder. */
   where: string;
   /** Since when it needs the person; for a background session, since it started. */

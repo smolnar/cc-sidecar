@@ -21,8 +21,8 @@ From the top:
 - **Context**: how full the context window is, what the session cost, the prompt cache's hit rate and when it goes cold.
 - **Speed**: output tokens per second, with the recent average and peak.
 - **Limits**: your subscription's usage windows and when they reset.
-- **Needs you**: your other Claude Code sessions that wait on a question or a permission prompt.
-- **Footer**: the folder, git branch and state, a worktree if the session runs in one, and the Claude Code version, model and effort.
+- **Needs you**: your other Claude Code sessions that wait on a question or a permission prompt, those of your other [profiles](#profiles) too.
+- **Footer**: the session's profile when you set up profiles, the folder, git branch and state, a worktree if the session runs in one, and the Claude Code version, model and effort.
 
 Sections fold to one line when the terminal is short, and the ones with nothing to say stay hidden. The lists (plan, agents, changed files and sessions that need you) fill the rows the other sections leave free, and end in `… N more` where they would run into the next section.
 
@@ -80,6 +80,29 @@ Set it in `/config`, or in `~/.claude/settings.json`:
 
 The `themes/dock.json` theme pairs a light ANSI theme with a dark sidebar; pick `custom:sidecar:dock` in `/config` to use it. The screenshot uses it, with `panelBackground` set to `#22272e`.
 
+### Profiles
+
+Claude Code keeps a login per configuration folder: `~/.claude`, or the folder `CLAUDE_CONFIG_DIR` names. Each session lists only the sessions of its own folder under Needs you, unless a profiles file names more. Then every session lists the sessions of all of them that need you, each under its profile's name, and the footer names the session's own profile.
+
+The profiles live in `~/.config/cc-sidecar/profiles.json` (under `XDG_CONFIG_HOME` when it is set), one file for every profile:
+
+```json
+{
+  "profiles": {
+    "personal": { "name": "Personal", "path": "~/.claude" },
+    "work": { "name": "Work", "path": "~/.claude-work", "color": "#e0823d" }
+  }
+}
+```
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `path` | required | The configuration folder, absolute or under `~`. A profile without one is left out. |
+| `name` | the profile's id | What the panel calls the profile. |
+| `color` | blue, orange, purple, teal, pink | A `#rrggbb` colour for the profile's name; one that isn't takes the next of the defaults, in the order the profiles are listed. |
+
+Claude Code's `settings.json` takes no objects a plugin's manifest can't declare, so the profiles have a file of their own. A file that is missing or isn't JSON leaves each session to its own folder.
+
 ## Commands
 
 - `/brief`: print the brief.
@@ -94,8 +117,9 @@ The `themes/dock.json` theme pairs a light ANSI theme with a dark sidebar; pick 
   - One call on the session's model when you run `/brief refresh`, which sends the whole conversation again as a fork of it.
 - **Network**: it reads `https://downloads.claude.ai/claude-code-releases/latest`, the feed Claude Code's updater reads, to colour the footer's dot when a newer release is out. Each session reads it when it starts or after `/clear` or `/resume`, then once an hour. It's a plain GET that carries nothing of yours, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` doesn't turn it off.
 - **Local files**:
-  - Each session writes `~/.claude/sidecar/presence/<session id>.json`, so your other sessions can list it under Needs you: its name, folder, state, pending question, the last sentence of its reply, its zellij session and tab, and when it last finished and was seen. The file stays after the session ends, until another session removes it.
-  - It reads the `<pid>.json` entries of Claude Code's own `~/.claude/sessions/` registry and runs `claude agents --json` every 30 seconds for the same list. It removes (`rm -f`) the presence files of sessions that ended or that no session has written for an hour.
+  - Each session writes `sidecar/presence/<session id>.json` in its configuration folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`), so your other sessions can list it under Needs you: its name, folder, state, pending question, the last sentence of its reply, its zellij session and tab, and when it last finished and was seen. The file stays after the session ends, until another session of that folder removes it.
+  - It reads the `<pid>.json` entries of Claude Code's own `sessions/` registry in its configuration folder and runs `claude agents --json` every 30 seconds for the same list. It removes (`rm -f`) the presence files of sessions that ended or that no session has written for an hour, in its own folder only.
+  - It reads `~/.config/cc-sidecar/profiles.json`, if there is one. With [profiles](#profiles), it also reads the presence files and the `sessions/` registry of each profile's folder, and runs `claude agents --json` for each with `CLAUDE_CONFIG_DIR` set to it. A session of one profile then shows the names, folders and pending questions of the others' sessions. None of it reaches a model call; it is only drawn in the panel.
   - It keeps each session's brief (title, story, steps and plan) and its work (the todo list and the paths of the files Claude changed) in the plugin's store, a JSON file in Claude Code's configuration folder, for the 200 newest sessions, so a resumed session shows them again.
 - **git** runs in the session's folder for the footer, and in the folder of each file Claude changes when that folder lies in the session's folder or one added with `/add-dir`. That check reads the path as spelled: a symlink inside those folders can lead git to a repository elsewhere, and a repository nested inside them is used as it is. The repository's fsmonitor, external diff and textconv drivers are turned off, but a filter driver its config names (`filter.<name>.clean`) still runs, as it does for your own `git diff`. git never writes `.git/index`, so it doesn't hold the lock a commit of yours needs.
 - **zellij**: inside zellij it renames its pane and tab, gives them their names back when the session ends, and asks every 10 seconds which tab is on screen.
