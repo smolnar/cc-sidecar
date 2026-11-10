@@ -90,15 +90,17 @@ import {
   contextTone,
   PALETTE,
   elapsed,
-  engineParts,
+  elidePath,
   fitBlocks,
   foldedDone,
   gap,
   gitMarks,
+  isBehind,
   isShownLimit,
   limitName,
   limitTone,
   modelLabel,
+  modelText,
   parseStatus,
   planCount,
   recentSteps,
@@ -1763,55 +1765,75 @@ export const register: Register = (on, options) => {
           ).map((part, i) => text(`title-${i}`, part, { dim: true }))
         : [text("title", title, { bold: true })];
     const stateRows: Row[] = state === null ? [] : [line("state", [state])];
-    // In a linked worktree the path is the main repository's; the branch, then the worktree, follow it.
+    // The footer reads as a section: the profile, in its colour, heads it with the model on its right;
+    // the path follows, the main repository's in a linked worktree, then the branch, the worktree and
+    // Claude Code's version.
     const worktree = repoNow?.worktree ?? null;
     const marks = repoNow === null ? "" : gitMarks(repoNow);
-    const footerRows: Row[] =
-      engine === null
-        ? []
-        : [
-            // A profile named in the settings leads the line, in its colour.
-            line("where", [
-              ...(ownProfile === null || ownProfile.name === ""
-                ? []
-                : [
-                    {
-                      text: ownProfile.name,
-                      color: ownProfile.color,
-                      bold: true,
-                    },
-                    { text: " · ", dim: true },
-                  ]),
-              { text: worktree?.main ?? engine.path, dim: true },
-            ]),
-            ...(repoNow === null
-              ? []
-              : [
-                  line("branch", [
-                    { text: `${BRANCH} branch `, dim: true },
-                    { text: repoNow.branch },
-                    ...(marks === "" ? [] : [{ text: ` ${marks}`, dim: true }]),
-                  ]),
-                ]),
-            ...(worktree === null
-              ? []
-              : [
-                  line("worktree", [
-                    { text: "⎇ worktree ", dim: true },
-                    { text: worktree.name },
-                  ]),
-                ]),
-            line(
-              "engine",
-              engineParts(
-                engine.version,
-                engine.latest,
-                engine.model,
-                engine.effort,
-                width
-              )
-            ),
-          ];
+    const footerRows: Row[] = [];
+    if (engine !== null) {
+      const head: Part =
+        ownProfile === null || ownProfile.name === ""
+          ? heading("SESSION")
+          : {
+              text: ownProfile.name.toUpperCase(),
+              color: ownProfile.color,
+              bold: true,
+            };
+      const model = modelText(
+        engine.model,
+        engine.effort,
+        width - cells(head.text) - 1
+      );
+      footerRows.push(
+        model === null
+          ? line("footer", [head])
+          : row("footer", [head], [{ text: model, dim: true }])
+      );
+
+      const path = elidePath(worktree?.main ?? engine.path, width);
+      const repoAt = path.lastIndexOf("/") + 1;
+      footerRows.push(
+        line(
+          "where",
+          [
+            { text: path.slice(0, repoAt), dim: true },
+            { text: path.slice(repoAt) },
+          ].filter((part) => part.text !== "")
+        )
+      );
+
+      if (repoNow !== null)
+        footerRows.push(
+          line("branch", [
+            { text: BRANCH, dim: true },
+            { text: ` ${repoNow.branch}` },
+            ...(marks === "" ? [] : [{ text: ` ${marks}`, dim: true }]),
+          ])
+        );
+      if (worktree !== null)
+        footerRows.push(
+          line("worktree", [
+            { text: "⎇", dim: true },
+            { text: ` ${worktree.name}` },
+          ])
+        );
+
+      const isOld = isBehind(engine.version, engine.latest);
+      const version: Part[] = [
+        { text: "●", tone: isOld ? "warning" : "success" },
+        { text: " Claude Code", bold: true },
+        { text: ` ${engine.version}`, dim: true },
+      ];
+      const newer = `${engine.latest} out`;
+      footerRows.push(
+        isOld &&
+          cells(version.map((part) => part.text).join("")) + 1 + cells(newer) <=
+            width
+          ? row("engine", version, [{ text: newer, tone: "warning" }])
+          : line("engine", version)
+      );
+    }
 
     // ---------- the sections, each in its forms: fullest first, hidden last ----------
     /** A form that lists items, as many as the dock has room for: its heading rows, each item's rows, and the row counting the rest. */

@@ -421,27 +421,31 @@ export function isBehind(version: string, latest: string | null): boolean {
 }
 
 /**
- * The footer's engine line in `width` cells: `● Claude Code 2.1.300 · Opus 5.5 · xhigh`, its dot
- * yellow while a newer release is out, leaving out the effort, then the model, before it would wrap.
+ * The footer heading's right part in `room` cells: `Opus 5.5 · xhigh`, leaving out the effort, then
+ * the model, before it would not fit; null when nothing fits or nothing is known.
  */
-export function engineParts(
-  version: string,
-  latest: string | null,
+export function modelText(
   model: string,
   effort: string | null,
-  width: number
-): { text: string; tone?: Tone; bold?: boolean; dim?: boolean }[] {
-  const head = `● Claude Code ${version}`;
-  const tail =
-    [effort === null ? model : `${model} · ${effort}`, model].find(
-      (text) => cells(head) + cells(` · ${text}`) <= width
-    ) ?? null;
-  return [
-    { text: "●", tone: isBehind(version, latest) ? "warning" : "success" },
-    { text: " Claude Code", bold: true },
-    { text: ` ${version}`, dim: true },
-    ...(tail === null ? [] : [{ text: ` · ${tail}`, dim: true }]),
-  ];
+  room: number
+): string | null {
+  return (
+    [effort === null ? null : `${model} · ${effort}`, model].find(
+      (text): text is string =>
+        text !== null && text !== "" && cells(text) <= room
+    ) ?? null
+  );
+}
+
+/** `path` in at most `room` cells: its leading folders give way to `…/` one by one, then its end is cut. */
+export function elidePath(path: string, room: number): string {
+  let folders = path.split("/");
+  let shown = path;
+  while (cells(shown) > room && folders.length > 1) {
+    folders = folders.slice(1);
+    shown = `…/${folders.join("/")}`;
+  }
+  return clip(shown, room);
 }
 
 /** A model id as people say it: `claude-opus-5-5` → `Opus 5.5`. */

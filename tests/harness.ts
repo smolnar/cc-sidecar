@@ -1362,3 +1362,22 @@ export function colorOf(
   }
   return undefined;
 }
+
+/** The props of the first Text a drawn tree shows whose text, spaces trimmed, is `text`. */
+export function textProps(
+  node: RenderNode | undefined,
+  text: string
+): { color?: string; dimColor?: boolean; bold?: boolean } | undefined {
+  if (node === undefined || typeof node === "string") return undefined;
+  if (node.type === "Text" && textOf(node).trim() === text)
+    return { ...(node.props as object) };
+  const children =
+    "children" in node && Array.isArray(node.children)
+      ? (node.children as RenderNode[])
+      : [];
+  for (const child of children) {
+    const found = textProps(child, text);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}

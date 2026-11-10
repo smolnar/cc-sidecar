@@ -36,8 +36,10 @@ import {
   storeSize,
   switchConversation,
   textOf,
+  textProps,
 } from "./harness";
 import type { BriefFields, Harness } from "./harness";
+import { BRANCH } from "../hooks/sidebar";
 
 const SECOND = 1000;
 const HOUR = 60 * MINUTE;
@@ -246,8 +248,9 @@ describe("the sidebar's order", () => {
       "SPEED",
       "LIMITS",
       "NEEDS YOU",
+      "SESSION",
       "~/.dotfiles",
-      " branch main",
+      `${BRANCH} main`,
     ].map(at);
 
     expect(lines[0]).toBe("Fuse gauges with near-limit bars");
@@ -1162,25 +1165,33 @@ describe("the dot before Claude Code", () => {
     await h.clock.settle();
   }
 
-  test("is the only sign of an update: the engine line names no update", async ($, on) => {
+  test("names the newer release on the version's right, in yellow", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.310");
     await replied(h, $);
 
-    const lines = await panelLines($, 60);
+    const panel = await mountPanel($, { bodyColumns: 60 });
+    const lines = (await shown(panel)).split("\n");
+    const version = lines.find((line) => line.startsWith("● Claude Code"));
 
-    expect(lines).toContain("● Claude Code 2.1.300 · Opus 5.5 · xhigh");
-    expect(lines.join("\n")).not.toContain("Update available");
+    expect(version).toMatch(/^● Claude Code 2\.1\.300 +2\.1\.310 out$/);
+    expect(colorOf(await panel.drawn(), "2.1.310 out")).toBe(YELLOW);
   });
 
-  test("leaves out the effort before the engine line would wrap", async ($, on) => {
+  test("names no release beside the version while it is the latest", async ($, on) => {
+    const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300");
+    await replied(h, $);
+
+    expect(await panelLines($, 60)).toContain("● Claude Code 2.1.300");
+  });
+
+  test("drops the newer release before the version row would wrap", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.310");
     await replied(h, $);
 
-    const lines = await panelLines($, 36);
+    const panel = await mountPanel($, { bodyColumns: 30 });
 
-    const engine = lines.find((line) => line.startsWith("● Claude Code"));
-    expect(engine).toBe("● Claude Code 2.1.300 · Opus 5.5");
-    expect([...(engine ?? "")].length).toBeLessThanOrEqual(inner(36));
+    expect((await shown(panel)).split("\n")).toContain("● Claude Code 2.1.300");
+    expect(colorOf(await panel.drawn(), "●")).toBe(YELLOW);
   });
 
   test("stays green when the release server cannot be reached", async ($, on) => {
@@ -1202,11 +1213,8 @@ describe("the dot before Claude Code", () => {
 });
 
 describe("the footer", () => {
-  test("shows the path, branch and git state, then the engine, model and effort", async ($, on) => {
-    const h = await boot($, on);
-    h.git.status =
-      "# branch.oid 1a2b\n# branch.head opencode-sidebar\n# branch.ab +1 -0\n1 .M N... 100644 100644 100644 a b src/a.ts\n1 M. N... 100644 100644 100644 a b src/b.ts\n? notes.md\n";
-    await briefed(h, $);
+  /** A turn ends, so the footer knows the model's effort too, as a real session's first reply tells it. */
+  async function replied(h: Harness, $: Engine) {
     const turnId = await startTurn($, "go");
     await replyStep(h, $, turnId, {
       text: "Working.",
@@ -1215,13 +1223,39 @@ describe("the footer", () => {
     });
     await endTurn($, turnId, { answer: "Done." });
     await h.clock.settle();
+  }
 
-    const lines = await panelLines($);
+  /** The footer's rows, from its heading to the panel's last row. */
+  const footerOf = (lines: string[]): string[] =>
+    lines.slice(lines.findIndex((line) => line.startsWith("SESSION")));
 
-    const where = lines.indexOf("~/.dotfiles");
-    expect(where).toBeGreaterThan(-1);
-    expect(lines[where + 1]).toBe(" branch opencode-sidebar !2 ?1 ⇡1");
-    expect(lines).toContain("● Claude Code 2.1.300 · Opus 5.5 · xhigh");
+  test("opens with a SESSION heading, the model and effort on its right, then the path, branch and version", async ($, on) => {
+    const h = await boot($, on);
+    h.git.status =
+      "# branch.oid 1a2b\n# branch.head opencode-sidebar\n# branch.ab +1 -0\n1 .M N... 100644 100644 100644 a b src/a.ts\n1 M. N... 100644 100644 100644 a b src/b.ts\n? notes.md\n";
+    await briefed(h, $);
+    await replied(h, $);
+
+    const footer = footerOf(await panelLines($));
+
+    expect(footer[0]).toMatch(/^SESSION +Opus 5\.5 · xhigh$/);
+    expect([...(footer[0] ?? "")].length).toBe(inner(44));
+    expect(footer.slice(1)).toEqual([
+      "~/.dotfiles",
+      `${BRANCH} opencode-sidebar !2 ?1 ⇡1`,
+      "● Claude Code 2.1.300",
+    ]);
+  });
+
+  test("dims the heading and the path's parent folders, and leaves the repository's name bright", async ($, on) => {
+    const h = await boot($, on);
+    await briefed(h, $);
+
+    const drawn = await (await mountPanel($, { bodyColumns: 44 })).drawn();
+
+    expect(textProps(drawn, "SESSION")?.dimColor).toBe(true);
+    expect(textProps(drawn, "~/")?.dimColor).toBe(true);
+    expect(textProps(drawn, ".dotfiles")?.dimColor).toBeFalsy();
   });
 
   test("shows the path alone outside a git repository", async ($, on) => {
@@ -1229,11 +1263,11 @@ describe("the footer", () => {
     h.git.isDown = true;
     await briefed(h, $);
 
-    const lines = await panelLines($);
+    const footer = footerOf(await panelLines($));
 
-    expect(lines).toContain("~/.dotfiles");
-    expect(lines.some((line) => line.includes("branch"))).toBe(false);
-    expect(lines.some((line) => line.startsWith("⎇"))).toBe(false);
+    expect(footer[1]).toBe("~/.dotfiles");
+    expect(footer.some((line) => line.startsWith(BRANCH))).toBe(false);
+    expect(footer.some((line) => line.startsWith("⎇"))).toBe(false);
   });
 
   /** The session runs in a linked worktree of ~/.dotfiles, as Claude Code's own worktrees do. */
@@ -1263,26 +1297,38 @@ describe("the footer", () => {
       await panel.unmount();
       return lines;
     };
-    expect(await footer()).toContain(" branch feat/gauges !1");
+    expect(await footer()).toContain(`${BRANCH} feat/gauges !1`);
 
     h.git.isTimingOut = true;
     await runTurn($, { prompt: "anything else?", answer: "No." });
     await h.clock.settle();
 
-    expect(await footer()).toContain(" branch feat/gauges !1");
+    expect(await footer()).toContain(`${BRANCH} feat/gauges !1`);
   });
 
-  test("names the branch above the worktree, under the main repository's path", async ($, on) => {
+  test("puts the worktree on a row of its own under the branch, marked by ⎇ alone", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
     await inWorktree(h, $);
 
-    const lines = await panelLines($, 60);
-    const where = lines.indexOf("~/.dotfiles");
+    const footer = footerOf(await panelLines($, 60));
 
-    expect(where).toBeGreaterThan(-1);
-    expect(lines[where + 1]).toBe(" branch feat/fit-dock");
-    expect(lines[where + 2]).toBe("⎇ worktree fit-dock");
-    expect(lines[where + 3]).toBe("● Claude Code 2.1.300 · Opus 5.5");
+    expect(footer.slice(1)).toEqual([
+      "~/.dotfiles",
+      `${BRANCH} feat/fit-dock`,
+      "⎇ fit-dock",
+      "● Claude Code 2.1.300",
+    ]);
+  });
+
+  test("dims the ⎇ and leaves the worktree's name white", async ($, on) => {
+    const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
+    await inWorktree(h, $);
+
+    const drawn = await (await mountPanel($, { bodyColumns: 60 })).drawn();
+
+    expect(textProps(drawn, "⎇")?.dimColor).toBe(true);
+    expect(textProps(drawn, "fit-dock")?.dimColor).toBeFalsy();
+    expect(textProps(drawn, "fit-dock")?.color).toBeUndefined();
   });
 
   test("cuts a long branch at the panel's edge and leaves the path whole", async ($, on) => {
@@ -1292,28 +1338,49 @@ describe("the footer", () => {
     await briefed(h, $);
     await h.clock.settle();
 
-    const lines = await panelLines($, 30);
-    const where = lines.indexOf("~/.dotfiles");
+    const footer = footerOf(await panelLines($, 30));
 
-    expect(where).toBeGreaterThan(-1);
-    expect(lines[where + 1]?.startsWith(" branch feat/a-branch")).toBe(true);
-    expect([...(lines[where + 1] ?? "")].length).toBeLessThanOrEqual(30);
+    expect(footer[1]).toBe("~/.dotfiles");
+    expect(footer[2]?.startsWith(`${BRANCH} feat/a-branch`)).toBe(true);
+    expect([...(footer[2] ?? "")].length).toBeLessThanOrEqual(inner(30));
+  });
+
+  test("shortens a long path from the left, keeping the repository's name", async ($, on) => {
+    const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
+    h.cwd = `${HOME}/projects/intangia/clients/acme/platform`;
+
+    // The first draw sets the session up; the ones after show its folder.
+    const first = await mountPanel($, { bodyColumns: 60 });
+    await first.drawn();
+    await first.unmount();
+    await h.clock.advance(1);
+    const footerAt = async (bodyColumns: number) => {
+      const panel = await mountPanel($, { bodyColumns });
+      const lines = (await shown(panel)).split("\n");
+      await panel.unmount();
+      return footerOf(lines);
+    };
+    const wide = await footerAt(60);
+    const narrow = await footerAt(30);
+
+    expect(wide[1]).toBe("~/projects/intangia/clients/acme/platform");
+    expect(narrow[1]).toBe("…/clients/acme/platform");
   });
 
   test("leaves no row for a worktree in a normal checkout", async ($, on) => {
     const h = await boot($, on);
     await briefed(h, $);
 
-    const lines = await panelLines($, 60);
-    const where = lines.indexOf("~/.dotfiles");
+    const footer = footerOf(await panelLines($, 60));
 
-    expect(where).toBeGreaterThan(-1);
-    expect(lines[where + 1]).toBe(" branch main");
-    expect(lines[where + 2]).toBe("● Claude Code 2.1.300 · Opus 5.5");
-    expect(lines.some((line) => line.startsWith("⎇"))).toBe(false);
+    expect(footer.slice(1)).toEqual([
+      "~/.dotfiles",
+      `${BRANCH} main`,
+      "● Claude Code 2.1.300",
+    ]);
   });
 
-  test("keeps the worktree row with the footer however short the dock", async ($, on) => {
+  test("keeps every footer row however short the dock", async ($, on) => {
     const h = await boot($, on, {}, IN_ZELLIJ, "2.1.300", false);
     await inWorktree(h, $);
 
@@ -1325,11 +1392,12 @@ describe("the footer", () => {
       const lines = (await shown(panel)).split("\n");
       await panel.unmount();
 
-      expect(lines.slice(-4)).toEqual([
+      expect(lines.slice(-5)).toEqual([
+        "SESSION" + " ".repeat(inner(60) - "SESSION".length - "Opus 5.5".length) + "Opus 5.5",
         "~/.dotfiles",
-        " branch feat/fit-dock",
-        "⎇ worktree fit-dock",
-        "● Claude Code 2.1.300 · Opus 5.5",
+        `${BRANCH} feat/fit-dock`,
+        "⎇ fit-dock",
+        "● Claude Code 2.1.300",
       ]);
     }
   });
@@ -1669,7 +1737,7 @@ describe("lists that fill the dock", () => {
     await editFiles(h, $, FILES);
 
     const counts: number[] = [];
-    for (let height = 22; height <= 34; height++) {
+    for (let height = 23; height <= 35; height++) {
       const shown = await dock($, height);
       counts.push(section(shown.all, "CHANGED").filter(isFile).length);
       expect(shown.all).not.toContain("… 1 more files");
@@ -1790,7 +1858,7 @@ describe("lists that fill the dock", () => {
         .map((row) => row.slice(2).split("  ")[0]);
 
     const tall = section((await dock($, 50)).all, "NEEDS YOU");
-    const shown = await dock($, 26);
+    const shown = await dock($, 27);
     const needs = section(shown.all, "NEEDS YOU");
     const listed = listedIn(needs);
 
@@ -1800,7 +1868,7 @@ describe("lists that fill the dock", () => {
     expect(listed).toEqual(names.slice(0, listed.length));
     expect(needs.at(-1)).toBe(`… ${names.length - listed.length} more`);
     // A session takes two rows, so one row may be left over.
-    expect(shown.all.length).toBeGreaterThanOrEqual(25);
+    expect(shown.all.length).toBeGreaterThanOrEqual(26);
   });
 
   test("shares the spare rows between two long lists in turn", async ($, on) => {
@@ -2047,7 +2115,7 @@ describe("lists that fill the dock", () => {
         rows
           .filter((row) => row.startsWith("◆ "))
           .map((row) => row.slice(2).split("  ")[0]);
-      const held = await heldDock($, 26);
+      const held = await heldDock($, 27);
 
       await held.wheel("◆ Bookshelf plans", 1);
       const needs = section((await held.rows()).all, "NEEDS YOU");
@@ -2095,8 +2163,8 @@ describe("a conversation the mod never saw start", () => {
 
     const lines = await drawnTwice(h, $);
 
-    expect(lines).toContain("● Claude Code 2.1.300 · Opus 5.5");
-    expect(lines.includes("~/.dotfiles") && lines.includes(" branch main")).toBe(
+    expect(lines).toContain("● Claude Code 2.1.300");
+    expect(lines.includes("~/.dotfiles") && lines.includes(`${BRANCH} main`)).toBe(
       true
     );
   });

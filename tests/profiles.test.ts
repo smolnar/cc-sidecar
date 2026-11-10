@@ -8,15 +8,18 @@ import {
   MINUTE,
   boot,
   briefWith,
+  endTurn,
   colorOf,
   mountBand,
   mountPanel,
   nameSession,
   otherSession,
   reply,
+  replyStep,
   runCommand,
   runTurn,
   shown,
+  startTurn,
 } from "./harness";
 import type { BriefFields, Harness } from "./harness";
 
@@ -75,6 +78,10 @@ function section(lines: string[], heading: string): string[] {
   const end = lines.findIndex((line, i) => i > start && line.trim() === "");
   return lines.slice(start, end < 0 ? undefined : end);
 }
+
+/** The footer's heading: the row above the session's path. */
+const headingOf = (lines: string[]): string | undefined =>
+  lines[lines.indexOf("~/.dotfiles") - 1];
 
 const needsRows = async ($: Engine) =>
   section(await panelLines($), "NEEDS YOU");
@@ -319,13 +326,35 @@ describe("sessions of other profiles that need you", () => {
 });
 
 describe("the session's own profile", () => {
+  test("leaves out the effort, then the model, before the heading would wrap", async ($, on) => {
+    const h = await boot($, on);
+    setProfiles(h, {
+      personal: { name: "Personal projects", path: "~/.claude" },
+    });
+    await briefed(h, $);
+    const turnId = await startTurn($, "go");
+    await replyStep(h, $, turnId, { text: "Working.", output: 100, ms: SECOND });
+    await endTurn($, turnId, { answer: "Done." });
+    await h.clock.settle();
+    const heading = async (bodyColumns: number) => {
+      const panel = await mountPanel($, { bodyColumns });
+      const lines = (await shown(panel)).split("\n");
+      await panel.unmount();
+      return headingOf(lines);
+    };
+
+    expect(await heading(60)).toMatch(/^PERSONAL PROJECTS +Opus 5\.5 · xhigh$/);
+    expect(await heading(30)).toMatch(/^PERSONAL PROJECTS +Opus 5\.5$/);
+    expect(await heading(26)).toBe("PERSONAL PROJECTS");
+  });
+
   test("names its profile in the footer, in the profile's colour", async ($, on) => {
     const h = await boot($, on);
     setProfiles(h);
     await briefed(h, $);
 
-    expect(await panelLines($)).toContain("Personal · ~/.dotfiles");
-    expect(await colourOf($, "Personal")).toBe(FIRST_COLOUR);
+    expect(headingOf(await panelLines($))).toMatch(/^PERSONAL +Opus 5\.5/);
+    expect(await colourOf($, "PERSONAL")).toBe(FIRST_COLOUR);
   });
 
   test("takes ~/.claude for its profile while CLAUDE_CONFIG_DIR is not set", async ($, on) => {
@@ -337,7 +366,7 @@ describe("the session's own profile", () => {
     expect(Object.keys(h.files)).toContain(
       `${CONFIG}/sidecar/presence/${h.sessionId}.json`
     );
-    expect(await panelLines($)).toContain("Personal · ~/.dotfiles");
+    expect(headingOf(await panelLines($))).toMatch(/^PERSONAL +Opus 5\.5/);
   });
 
   test("names a session run with CLAUDE_CONFIG_DIR after that folder's profile, a trailing slash or not", async ($, on) => {
@@ -351,7 +380,7 @@ describe("the session's own profile", () => {
     await briefed(h, $);
     await h.clock.advance(MINUTE);
 
-    expect(await panelLines($)).toContain("Work · ~/.dotfiles");
+    expect(headingOf(await panelLines($))).toMatch(/^WORK +Opus 5\.5/);
     expect(Object.keys(h.files)).toContain(
       `${WORK}/sidecar/presence/${h.sessionId}.json`
     );
@@ -362,7 +391,7 @@ describe("the session's own profile", () => {
     setProfiles(h, { personal: { path: "~/.claude" } });
     await briefed(h, $);
 
-    expect(await panelLines($)).toContain("personal · ~/.dotfiles");
+    expect(headingOf(await panelLines($))).toMatch(/^PERSONAL +Opus 5\.5/);
   });
 
   test("paints a profile the colour the profiles file names, and the default for one that is no colour", async ($, on) => {
@@ -381,7 +410,7 @@ describe("the session's own profile", () => {
     await briefed(h, $);
     await h.clock.advance(POLL);
 
-    expect(await colourOf($, "Personal")).toBe("#22aa88");
+    expect(await colourOf($, "PERSONAL")).toBe("#22aa88");
     expect(await colourOf($, "Work")).toBe(SECOND_COLOUR);
   });
 
@@ -404,7 +433,7 @@ describe("the session's own profile", () => {
     await h.clock.advance(POLL);
 
     expect(await needsRows($)).toEqual([]);
-    expect(await panelLines($)).toContain("personal · ~/.dotfiles");
+    expect(headingOf(await panelLines($))).toMatch(/^PERSONAL +Opus 5\.5/);
   });
 
   test("takes Claude Code's title in a session run with CLAUDE_CONFIG_DIR", async ($, on) => {

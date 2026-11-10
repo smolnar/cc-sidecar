@@ -22,7 +22,7 @@ From the top:
 - **Speed**: output tokens per second, with the recent average and peak.
 - **Limits**: your subscription's usage windows and when they reset.
 - **Needs you**: your other Claude Code sessions that wait on a question or a permission prompt, those of your other [profiles](#profiles) too.
-- **Footer**: the session's profile when you set up profiles and the folder; the git branch and state on a row of their own, under a Nerd Font's branch symbol; a worktree if the session runs in one; and the Claude Code version, model and effort.
+- **Footer**: a section headed by the session's profile in its colour when you set up profiles, with the model and effort on its right; the folder, its parent folders dimmed and shortened from the left when the panel is narrow; the git branch and state under a Nerd Font's branch symbol; the worktree under `⎇` if the session runs in one; and the Claude Code version, with the newer release beside it when one is out.
 
 Sections fold to one line when the terminal is short, and the ones with nothing to say stay hidden. The lists (plan, agents, changed files and sessions that need you) fill the rows the other sections leave free, and end in `… N more` where they would run into the next section.
 
